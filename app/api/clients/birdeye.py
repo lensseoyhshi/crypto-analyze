@@ -31,6 +31,7 @@ class BirdeyeClient(BaseApiClient):
 			"X-API-KEY": self.api_key,
 		}
 
+	# 某个币的交易记录
 	async def get_token_transactions(
 		self,
 		token_address: str,
@@ -66,6 +67,8 @@ class BirdeyeClient(BaseApiClient):
 		)
 		return TransactionsResponse(**data)
 
+
+	# 查询某个币赚钱最多的钱包地址
 	async def get_top_traders(
 		self,
 		token_address: str,
@@ -101,6 +104,7 @@ class BirdeyeClient(BaseApiClient):
 		)
 		return TopTradersResponse(**data)
 
+	# 查询某个钱包地址的历史交易接口
 	async def get_wallet_transactions(
 		self,
 		wallet_address: str,
@@ -135,6 +139,7 @@ class BirdeyeClient(BaseApiClient):
 		)
 		return WalletTransactionsResponse(**data)
 
+	# 查询钱包地址的投资组合
 	async def get_wallet_portfolio(
 		self,
 		wallet_address: str,
@@ -159,6 +164,7 @@ class BirdeyeClient(BaseApiClient):
 		)
 		return WalletTokenListResponse(**data)
 
+	# 查询最近新上币的接口
 	async def get_new_listings(
 		self,
 		sort_by: str = "liquidity",
@@ -194,6 +200,7 @@ class BirdeyeClient(BaseApiClient):
 		)
 		return NewListingsResponse(**data)
 
+	# 检查币是否为貔貅
 	async def get_token_security(
 		self,
 		token_address: str,
@@ -218,6 +225,7 @@ class BirdeyeClient(BaseApiClient):
 		)
 		return TokenSecurityResponse(**data)
 
+	# 查看币的流动性
 	async def get_token_overview(
 		self,
 		token_address: str,

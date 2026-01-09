@@ -31,8 +31,8 @@ def start_background_tasks(app: FastAPI):
 		(_dexscreener_poller(), "Dexscreener poller", settings.DEXSCREENER_FETCH_INTERVAL),
 		(_birdeye_new_listings_poller(), "Birdeye new listings", settings.BIRDEYE_NEW_LISTINGS_INTERVAL),
 		(_birdeye_token_overview_poller(), "Birdeye token overview", settings.BIRDEYE_TOKEN_OVERVIEW_INTERVAL),
-		(_birdeye_token_security_poller(), "Birdeye token security", settings.BIRDEYE_TOKEN_SECURITY_INTERVAL),
-		(_birdeye_token_transactions_poller(), "Birdeye token transactions", settings.BIRDEYE_TOKEN_TRANSACTIONS_INTERVAL),
+		# (_birdeye_token_security_poller(), "Birdeye token security", settings.BIRDEYE_TOKEN_SECURITY_INTERVAL),
+		# (_birdeye_token_transactions_poller(), "Birdeye token transactions", settings.BIRDEYE_TOKEN_TRANSACTIONS_INTERVAL),
 		(_birdeye_top_traders_poller(), "Birdeye top traders", settings.BIRDEYE_TOP_TRADERS_INTERVAL),
 		(_birdeye_wallet_portfolio_poller(), "Birdeye wallet portfolio", settings.BIRDEYE_WALLET_PORTFOLIO_INTERVAL),
 	]
@@ -64,6 +64,67 @@ def add_tracked_token(token_address: str):
 
 
 # ============================================================================
+# Helper Functions for Async Token Data Fetching
+# ============================================================================
+
+async def _fetch_token_security_async(token_address: str):
+	"""
+	Asynchronously fetch token security information and save to database.
+	If token already exists in database, update it; otherwise insert new record.
+	
+	Args:
+		token_address: Token address to check
+	"""
+	birdeye_client = BirdeyeClient()
+	try:
+		logger.info(f"[Async] Fetching token security for {token_address}")
+		response = await birdeye_client.get_token_security(token_address)
+		
+		if response.success:
+			async for session in get_async_session():
+				birdeye_repo = BirdeyeRepository(session)
+				await birdeye_repo.save_or_update_token_security(token_address, response.data)
+				logger.info(f"[Async] Token security saved/updated for {token_address}")
+				break
+		else:
+			logger.warning(f"[Async] Failed to fetch security for {token_address}: {response.dict()}")
+			
+	except Exception as e:
+		logger.error(f"[Async] Error fetching token security for {token_address}: {str(e)}", exc_info=True)
+	finally:
+		await birdeye_client.close()
+
+
+async def _fetch_token_transactions_async(token_address: str, limit: int = 50):
+	"""
+	Asynchronously fetch token transactions and save to database.
+	If transaction (txHash) exists in database, update it; otherwise insert new record.
+	
+	Args:
+		token_address: Token address to query
+		limit: Number of transactions to fetch
+	"""
+	birdeye_client = BirdeyeClient()
+	try:
+		logger.info(f"[Async] Fetching token transactions for {token_address}")
+		response = await birdeye_client.get_token_transactions(token_address, limit=limit)
+		
+		if response.success:
+			async for session in get_async_session():
+				birdeye_repo = BirdeyeRepository(session)
+				count = await birdeye_repo.save_or_update_token_transactions_batch(token_address, response.data.items)
+				logger.info(f"[Async] Saved/Updated {count} transactions for {token_address}")
+				break
+		else:
+			logger.warning(f"[Async] Failed to fetch transactions for {token_address}: {response.dict()}")
+			
+	except Exception as e:
+		logger.error(f"[Async] Error fetching token transactions for {token_address}: {str(e)}", exc_info=True)
+	finally:
+		await birdeye_client.close()
+
+
+# ============================================================================
 # Dexscreener Poller
 # ============================================================================
 
@@ -92,13 +153,22 @@ async def _dexscreener_poller():
 						status_code=200
 					)
 					
-					# Save structured data
+					# Save or update structured data
 					dex_repo = DexscreenerRepository(session)
-					await dex_repo.save_token_boosts_batch(response.items)
 					
-					# Add tokens to tracking list
 					for item in response.items:
+						# Check if token exists in database and save or update
+						await dex_repo.save_or_update_token_boost(item)
+						
+						# Add tokens to tracking list
 						add_tracked_token(item.tokenAddress)
+						
+						# Create background tasks to asynchronously fetch token security and transactions
+						token_address = item.tokenAddress
+						
+						# Create background tasks for each token
+						asyncio.create_task(_fetch_token_security_async(token_address))
+						asyncio.create_task(_fetch_token_transactions_async(token_address, limit=50))
 					
 					logger.info(f"[Dexscreener] Saved {len(response.items)} boosts (poll #{poll_count})")
 					break
@@ -119,6 +189,7 @@ async def _dexscreener_poller():
 # Birdeye Pollers
 # ============================================================================
 
+# 按时间 查询最近新上币的接口
 async def _birdeye_new_listings_poller():
 	"""Fetch new listings from Birdeye and save to database."""
 	client = BirdeyeClient()
@@ -144,9 +215,9 @@ async def _birdeye_new_listings_poller():
 							status_code=200
 						)
 						
-						# Save structured data
+						# Save or update structured data (check by address)
 						birdeye_repo = BirdeyeRepository(session)
-						await birdeye_repo.save_new_listings_batch(response.data.items)
+						await birdeye_repo.save_or_update_new_listings_batch(response.data.items)
 						
 						# Add new tokens to tracking list
 						for listing in response.data.items:
@@ -157,7 +228,7 @@ async def _birdeye_new_listings_poller():
 								try:
 									security = await client.get_token_security(listing.address)
 									if security.success:
-										await birdeye_repo.save_token_security(listing.address, security.data)
+										await birdeye_repo.save_or_update_token_security(listing.address, security.data)
 								except Exception as e:
 									logger.warning(f"[Birdeye] Failed to fetch security for {listing.address}: {str(e)}")
 							
@@ -169,7 +240,7 @@ async def _birdeye_new_listings_poller():
 								except Exception as e:
 									logger.warning(f"[Birdeye] Failed to fetch overview for {listing.address}: {str(e)}")
 						
-						logger.info(f"[Birdeye] Saved {len(response.data.items)} new listings (poll #{poll_count})")
+						logger.info(f"[Birdeye] Saved/Updated {len(response.data.items)} new listings (poll #{poll_count})")
 						break
 						
 			except Exception as e:
@@ -357,7 +428,7 @@ async def _birdeye_top_traders_poller():
 						if response.success:
 							async for session in get_async_session():
 								birdeye_repo = BirdeyeRepository(session)
-								count = await birdeye_repo.save_top_traders_batch(
+								count = await birdeye_repo.save_or_update_top_traders_batch(
 									token_address,
 									response.data.items
 								)
@@ -369,7 +440,7 @@ async def _birdeye_top_traders_poller():
 					except Exception as e:
 						logger.warning(f"[Birdeye] Failed to fetch top traders for {token_address}: {str(e)}")
 				
-				logger.info(f"[Birdeye] Saved {saved_count} top traders (poll #{poll_count})")
+				logger.info(f"[Birdeye] Saved/Updated {saved_count} top traders (poll #{poll_count})")
 						
 			except Exception as e:
 				logger.error(f"[Birdeye] Error in top traders poller: {str(e)}", exc_info=True)
@@ -409,7 +480,7 @@ async def _birdeye_wallet_portfolio_poller():
 						if response.success:
 							async for session in get_async_session():
 								birdeye_repo = BirdeyeRepository(session)
-								count = await birdeye_repo.save_wallet_tokens_batch(
+								count = await birdeye_repo.save_or_update_wallet_tokens_batch(
 									wallet_address,
 									response.data.items
 								)
@@ -421,7 +492,7 @@ async def _birdeye_wallet_portfolio_poller():
 					except Exception as e:
 						logger.warning(f"[Birdeye] Failed to fetch portfolio for {wallet_address}: {str(e)}")
 				
-				logger.info(f"[Birdeye] Saved {saved_count} wallet tokens (poll #{poll_count})")
+				logger.info(f"[Birdeye] Saved/Updated {saved_count} wallet tokens (poll #{poll_count})")
 						
 			except Exception as e:
 				logger.error(f"[Birdeye] Error in wallet portfolio poller: {str(e)}", exc_info=True)

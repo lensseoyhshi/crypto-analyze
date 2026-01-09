@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 	
 	# Database
 	DATABASE_URL: str = Field(
-		default="mysql+aiomysql://crypto_user:crypto_pass@localhost:3306/crypto_analyze"
+		default="mysql+aiomysql://root:12345678@localhost:3306/crypto_analyze"
 	)
 	
 	# API Keys
