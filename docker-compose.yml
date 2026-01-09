@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: crypto_analyze_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: crypto_analyze
+      MYSQL_USER: crypto_user
+      MYSQL_PASSWORD: crypto_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: crypto_analyze_app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=mysql+aiomysql://crypto_user:crypto_pass@db:3306/crypto_analyze
+      - BIRDEYE_API_KEY=9c1c446225f246f69ec5ebd6103f1502
+      - DEXSCREENER_FETCH_INTERVAL=6
+      - DEBUG=false
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 5 &&
+        echo 'Running migrations...' &&
+        alembic upgrade head &&
+        echo 'Starting application...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    restart: unless-stopped
+
+volumes:
+  db_data:
+
