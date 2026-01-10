@@ -206,7 +206,7 @@ class BirdeyeRepository:
 		token_address: str,
 		transaction: TransactionItem
 	) -> BirdeyeTokenTransaction:
-		"""Save a token transaction."""
+		"""Save a token transaction with safe float handling."""
 		try:
 			# Convert token info to JSON strings
 			quote_json = json.dumps(transaction.quote.dict()) if transaction.quote else None
@@ -220,10 +220,10 @@ class BirdeyeRepository:
 			db_tx = BirdeyeTokenTransaction(
 				quote=quote_json,
 				base=base_json,
-				basePrice=transaction.basePrice,
-				quotePrice=transaction.quotePrice,
-				pricePair=transaction.pricePair,
-				tokenPrice=transaction.tokenPrice,
+				basePrice=safe_double(transaction.basePrice),
+				quotePrice=safe_double(transaction.quotePrice),
+				pricePair=safe_double(transaction.pricePair),
+				tokenPrice=safe_double(transaction.tokenPrice),
 				txHash=transaction.txHash,
 				source=transaction.source,
 				blockUnixTime=transaction.blockUnixTime,
@@ -1041,31 +1041,69 @@ class BirdeyeRepository:
 				except:
 					pass
 			
+			# Helper function to safely convert to string
+			def safe_str(value):
+				return str(value) if value is not None else None
+			
 			db_overview = BirdeyeTokenOverview(
-				token_address=token_address,
-				price=safe_float(overview.price),
-				market_cap=safe_double(overview.marketCap),
-				fdv=safe_double(overview.fdv),
-				liquidity=safe_double(overview.liquidity),
-				total_supply=safe_float(overview.totalSupply),
-				circulating_supply=safe_float(overview.circulatingSupply),
-				holder=overview.holder,
+				address=token_address,
+				symbol=None,  # Not provided in this API response
+				decimals=None,  # Not provided in this API response
+				
+				# Supply and holders
+				total_supply=safe_str(overview.totalSupply),
+				circulating_supply=safe_str(overview.circulatingSupply),
+				holder_count=overview.holder,
 				number_markets=overview.numberMarkets,
-				price_change_24h_percent=safe_float(overview.priceChange24hPercent),
-				v24h=safe_double(overview.v24h),
-				v24h_usd=safe_double(overview.v24hUSD),
+				
+				# Price and market metrics
+				price=safe_str(overview.price),
+				market_cap=safe_str(overview.marketCap),
+				fdv=safe_str(overview.fdv),
+				liquidity=safe_str(overview.liquidity),
+				
+				# Extensions and metadata
+				extensions=overview.extensions if overview.extensions else None,
+				last_trade_unix_time=overview.lastTradeUnixTime,
+				last_trade_human_time=last_trade_time,
+				
+				# 30m metrics
+				price_change_30m_percent=safe_str(overview.priceChange30mPercent),
+				trade_30m=overview.trade30m,
+				buy_30m=overview.buy30m,
+				sell_30m=overview.sell30m,
+				volume_30m_usd=safe_str(overview.v30mUSD),
+				unique_wallet_30m=overview.uniqueWallet30m,
+				
+				# 1h metrics
+				price_change_1h_percent=safe_str(overview.priceChange1hPercent),
+				trade_1h=overview.trade1h,
+				buy_1h=overview.buy1h,
+				sell_1h=overview.sell1h,
+				volume_1h_usd=safe_str(overview.v1hUSD),
+				unique_wallet_1h=overview.uniqueWallet1h,
+				
+				# 4h metrics
+				price_change_4h_percent=safe_str(overview.priceChange4hPercent),
+				trade_4h=getattr(overview, 'trade4h', None),
+				buy_4h=getattr(overview, 'buy4h', None),
+				sell_4h=getattr(overview, 'sell4h', None),
+				volume_4h_usd=safe_str(getattr(overview, 'v4hUSD', None)),
+				unique_wallet_4h=getattr(overview, 'uniqueWallet4h', None),
+				
+				# 24h metrics
+				price_change_24h_percent=safe_str(overview.priceChange24hPercent),
 				trade_24h=overview.trade24h,
 				buy_24h=overview.buy24h,
 				sell_24h=overview.sell24h,
+				volume_24h_usd=safe_str(overview.v24hUSD),
+				volume_buy_24h_usd=safe_str(getattr(overview, 'vBuy24hUSD', None)),
+				volume_sell_24h_usd=safe_str(getattr(overview, 'vSell24hUSD', None)),
 				unique_wallet_24h=overview.uniqueWallet24h,
-				price_change_1h_percent=safe_float(overview.priceChange1hPercent),
-				v1h=safe_double(overview.v1h),
-				v1h_usd=safe_double(overview.v1hUSD),
-				v30m=safe_double(overview.v30m),
-				v30m_usd=safe_double(overview.v30mUSD),
-				last_trade_unix_time=overview.lastTradeUnixTime,
-				last_trade_human_time=last_trade_time,
-				created_at=datetime.utcnow()
+				
+				# Timestamps
+				created_at=datetime.utcnow(),
+				updated_at=datetime.utcnow()
 			)
 			
 			self.session.add(db_overview)
@@ -1133,7 +1171,7 @@ class BirdeyeRepository:
 				await self.session.commit()
 				await self.session.refresh(existing_trending)
 				
-				logger.debug(f"Updated trending token: {trending.symbol} ({trending.address})")
+				logger.info(f"Updated trending token: {trending.symbol} ({trending.address})")
 				return existing_trending
 			else:
 				# Insert new record
@@ -1159,7 +1197,7 @@ class BirdeyeRepository:
 				await self.session.commit()
 				await self.session.refresh(db_trending)
 				
-				logger.debug(f"Inserted new trending token: {trending.symbol} ({trending.address})")
+				logger.info(f"Inserted new trending token: {trending.symbol} ({trending.address})")
 				return db_trending
 			
 		except Exception as e:

@@ -635,51 +635,76 @@ class BirdeyeTokenSecurity(Base):
 
 
 class BirdeyeTokenOverview(Base):
-	"""Comprehensive token overview and metrics."""
+	"""Birdeye代币行情概览快照 - Comprehensive token overview and metrics."""
 	
 	__tablename__ = "birdeye_token_overview"
 	
-	id = Column(Integer, primary_key=True, autoincrement=True)
-	token_address = Column(String(128), nullable=False, index=True, comment="Token address")
-	
-	# Basic info
-	price = Column(Float, nullable=True, comment="Current price")
-	market_cap = Column(Double, nullable=True, index=True, comment="Market cap")
-	fdv = Column(Double, nullable=True, comment="Fully diluted valuation")
-	liquidity = Column(Double, nullable=True, index=True, comment="Total liquidity")
+	id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+	address = Column(String(64), nullable=False, default='', index=True, comment="代币合约地址 (address)")
+	symbol = Column(String(32), nullable=True, comment="代币符号 (需关联其他表获取，此接口未直接返回Symbol)")
+	decimals = Column(Integer, nullable=True, comment="精度")
 	
 	# Supply and holders
-	total_supply = Column(Float, nullable=True)
-	circulating_supply = Column(Float, nullable=True)
-	holder = Column(Integer, nullable=True, comment="Number of holders")
-	number_markets = Column(Integer, nullable=True, comment="Number of markets")
+	total_supply = Column(String(50), nullable=True, comment="总供应量 (totalSupply)")
+	circulating_supply = Column(String(50), nullable=True, comment="流通供应量 (circulatingSupply)")
+	holder_count = Column(Integer, nullable=True, comment="持有人数 (holder)")
+	number_markets = Column(Integer, nullable=True, comment="上线市场数量 (numberMarkets)")
 	
-	# 24h metrics
-	price_change_24h_percent = Column(Float, nullable=True, comment="24h price change %")
-	v24h = Column(Double, nullable=True, comment="24h volume")
-	v24h_usd = Column(Double, nullable=True, comment="24h volume USD")
-	trade_24h = Column(Integer, nullable=True, comment="24h trades")
-	buy_24h = Column(Integer, nullable=True)
-	sell_24h = Column(Integer, nullable=True)
-	unique_wallet_24h = Column(Integer, nullable=True, comment="24h unique wallets")
+	# Price and market metrics
+	price = Column(String(40), nullable=True, comment="当前价格 (price)")
+	market_cap = Column(String(40), nullable=True, comment="市值 (marketCap)")
+	fdv = Column(String(40), nullable=True, comment="完全稀释估值 (fdv)")
+	liquidity = Column(String(40), nullable=True, index=True, comment="流动性池USD (liquidity)")
 	
-	# 1h metrics
-	price_change_1h_percent = Column(Float, nullable=True)
-	v1h = Column(Float, nullable=True)
-	v1h_usd = Column(Float, nullable=True)
+	# Extensions and metadata
+	extensions = Column(JSON, nullable=True, comment="扩展数据 (extensions)")
+	last_trade_unix_time = Column(BigInteger, nullable=True, comment="最后交易时间戳")
+	last_trade_human_time = Column(DateTime, nullable=True, comment="最后交易时间 (ISO格式)")
 	
 	# 30m metrics
-	v30m = Column(Float, nullable=True)
-	v30m_usd = Column(Float, nullable=True)
+	price_change_30m_percent = Column(String(20), nullable=True, comment="30m 价格涨跌幅")
+	trade_30m = Column(Integer, nullable=True, comment="30m 交易笔数")
+	buy_30m = Column(Integer, nullable=True, comment="30m 买入笔数")
+	sell_30m = Column(Integer, nullable=True, comment="30m 卖出笔数")
+	volume_30m_usd = Column(String(40), nullable=True, comment="30m 交易额USD (v30mUSD)")
+	unique_wallet_30m = Column(Integer, nullable=True, comment="30m 独立钱包数")
 	
-	last_trade_unix_time = Column(BigInteger, nullable=True, comment="Last trade timestamp")
-	last_trade_human_time = Column(DateTime, nullable=True, comment="Last trade time")
+	# 1h metrics
+	price_change_1h_percent = Column(String(20), nullable=True, comment="1h 价格涨跌幅")
+	trade_1h = Column(Integer, nullable=True, comment="1h 交易笔数")
+	buy_1h = Column(Integer, nullable=True, comment="1h 买入笔数")
+	sell_1h = Column(Integer, nullable=True, comment="1h 卖出笔数")
+	volume_1h_usd = Column(String(40), nullable=True, comment="1h 交易额USD (v1hUSD)")
+	unique_wallet_1h = Column(Integer, nullable=True, comment="1h 独立钱包数")
 	
-	created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+	# 4h metrics
+	price_change_4h_percent = Column(String(20), nullable=True, comment="4h 价格涨跌幅")
+	trade_4h = Column(Integer, nullable=True, comment="4h 交易笔数")
+	buy_4h = Column(Integer, nullable=True, comment="4h 买入笔数")
+	sell_4h = Column(Integer, nullable=True, comment="4h 卖出笔数")
+	volume_4h_usd = Column(String(40), nullable=True, comment="4h 交易额USD (v4hUSD)")
+	unique_wallet_4h = Column(Integer, nullable=True, comment="4h 独立钱包数")
+	
+	# 24h metrics
+	price_change_24h_percent = Column(String(20), nullable=True, index=True, comment="24h 价格涨跌幅")
+	trade_24h = Column(Integer, nullable=True, comment="24h 交易笔数")
+	buy_24h = Column(Integer, nullable=True, comment="24h 买入笔数")
+	sell_24h = Column(Integer, nullable=True, comment="24h 卖出笔数")
+	volume_24h_usd = Column(String(40), nullable=True, index=True, comment="24h 交易额USD (v24hUSD)")
+	volume_buy_24h_usd = Column(String(40), nullable=True, comment="24h 买入额USD (vBuy24hUSD)")
+	volume_sell_24h_usd = Column(String(40), nullable=True, comment="24h 卖出额USD (vSell24hUSD)")
+	unique_wallet_24h = Column(Integer, nullable=True, comment="24h 独立钱包数")
+	
+	# Timestamps
+	created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment="数据入库时间")
+	updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False, comment="最后更新时间")
 	
 	__table_args__ = (
-		Index('idx_token_overview_created', 'token_address', 'created_at'),
-		Index('idx_market_cap_liquidity', 'market_cap', 'liquidity'),
+		Index('idx_address', 'address'),
+		Index('idx_liquidity', 'liquidity'),
+		Index('idx_market_cap', 'market_cap'),
+		Index('idx_change_24h', 'price_change_24h_percent'),
+		Index('idx_volume_24h', 'volume_24h_usd'),
 	)
 
 

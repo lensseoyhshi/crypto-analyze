@@ -320,16 +320,19 @@ class TokenOverviewData(BaseModel):
     trade5m: Optional[int] = None
     trade30m: Optional[int] = None
     trade1h: Optional[int] = None
+    trade4h: Optional[int] = None
     trade24h: Optional[int] = None
     
     buy1m: Optional[int] = None
     buy30m: Optional[int] = None
     buy1h: Optional[int] = None
+    buy4h: Optional[int] = None
     buy24h: Optional[int] = None
     
     sell1m: Optional[int] = None
     sell30m: Optional[int] = None
     sell1h: Optional[int] = None
+    sell4h: Optional[int] = None
     sell24h: Optional[int] = None
     
     # Volume metrics
@@ -341,13 +344,19 @@ class TokenOverviewData(BaseModel):
     v30mUSD: Optional[float] = None
     v1h: Optional[float] = None
     v1hUSD: Optional[float] = None
+    v4h: Optional[float] = None
+    v4hUSD: Optional[float] = None
     v24h: Optional[float] = None
     v24hUSD: Optional[float] = None
     
     vBuy30m: Optional[float] = None
     vBuy30mUSD: Optional[float] = None
+    vBuy24h: Optional[float] = None
+    vBuy24hUSD: Optional[float] = None
     vSell30m: Optional[float] = None
     vSell30mUSD: Optional[float] = None
+    vSell24h: Optional[float] = None
+    vSell24hUSD: Optional[float] = None
     
     numberMarkets: Optional[int] = None
     isScaledUiToken: bool = False
