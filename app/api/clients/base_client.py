@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional
 import httpx
 import logging
+import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 logger = logging.getLogger(__name__)
@@ -12,10 +13,18 @@ class BaseApiClient:
 	def __init__(self, base_url: str, timeout: int = 30, max_retries: int = 3):
 		self.base_url = base_url
 		self.max_retries = max_retries
+		
+		# 检查是否禁用 SSL 验证（仅开发环境）
+		verify_ssl = os.getenv("VERIFY_SSL", "true").lower() != "false"
+		
+		if not verify_ssl:
+			logger.warning("⚠️  SSL verification is DISABLED. This should only be used in development!")
+		
 		self._client = httpx.AsyncClient(
 			base_url=self.base_url,
 			timeout=timeout,
-			limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+			limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+			verify=verify_ssl  # 添加 SSL 验证控制
 		)
 
 	@retry(

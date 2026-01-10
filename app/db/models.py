@@ -1,29 +1,11 @@
 """Database models."""
 import json
 from typing import List, Dict, Optional
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, Index, BigInteger, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, Index, BigInteger, JSON, Double
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
 Base = declarative_base()
-
-
-class RawApiResponse(Base):
-	"""Model for storing raw API responses from external services."""
-	
-	__tablename__ = "raw_api_responses"
-
-	id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-	source = Column(String(64), nullable=False, index=True, comment="API source (e.g., 'dexscreener', 'birdeye')")
-	endpoint = Column(String(256), nullable=False, comment="API endpoint path")
-	response_json = Column(Text, nullable=False, comment="Raw JSON response as text")
-	status_code = Column(Integer, nullable=False, default=200, comment="HTTP status code")
-	error_message = Column(Text, nullable=True, comment="Error message if request failed")
-	created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True, comment="Timestamp when response was saved")
-	
-	__table_args__ = (
-		Index('idx_source_endpoint_created', 'source', 'endpoint', 'created_at'),
-	)
 
 
 # ============================================================================
@@ -113,10 +95,10 @@ class BirdeyeTokenTransaction(Base):
 	id = Column(BigInteger, primary_key=True, autoincrement=True)
 	quote = Column(String(1024), nullable=True, comment="计价货币，json字符串")
 	base = Column(String(1024), nullable=True, comment="目标代币，json字符串")
-	basePrice = Column(Float, nullable=True, comment="目标币 (Poppy) 的单价 (USD)")
-	quotePrice = Column(Float, nullable=True, comment="计价币 (SOL) 的单价 (USD)")
-	pricePair = Column(Float, nullable=True, comment="兑换比率,举例：1 个 SOL 可以买 36,144,566 个 Poppy")
-	tokenPrice = Column(Float, nullable=True, comment="这里通常指 Quote Token 的价格，举例：SOL")
+	basePrice = Column(Double, nullable=True, comment="目标币 (Poppy) 的单价 (USD)")
+	quotePrice = Column(Double, nullable=True, comment="计价币 (SOL) 的单价 (USD)")
+	pricePair = Column(Double, nullable=True, comment="兑换比率,举例：1 个 SOL 可以买 36,144,566 个 Poppy")
+	tokenPrice = Column(Double, nullable=True, comment="这里通常指 Quote Token 的价格，举例：SOL")
 	txHash = Column(String(255), nullable=True, index=True, comment="交易哈希。Solscan 浏览器上通过这个字符串查到这笔交易的")
 	source = Column(String(255), nullable=True, comment="交易来源。这笔交易发生在 Pump.fun 平台上")
 	blockUnixTime = Column(BigInteger, nullable=True, index=True, comment="交易时间戳（秒级）")
@@ -464,7 +446,7 @@ class BirdeyeNewListing(Base):
 	name = Column(String(255), nullable=True, comment="代币名称 (name), 支持Emoji")
 	decimals = Column(Integer, nullable=True, comment="精度 (decimals)")
 	source = Column(String(64), nullable=True, index=True, comment="上线来源/DEX (source), 如 meteora, raydium")
-	liquidity = Column(Float, nullable=True, comment="初始流动性USD (liquidity)")
+	liquidity = Column(Double, nullable=True, comment="初始流动性USD (liquidity)")
 	liquidity_added_at = Column(DateTime, nullable=True, index=True, comment="添加流动性时间 (liquidityAddedAt)")
 	logo_uri = Column(String(512), nullable=True, comment="Logo图片链接 (logoURI)")
 	create_time = Column(DateTime, default=datetime.utcnow, nullable=False, comment="数据抓取入库时间")
@@ -662,9 +644,9 @@ class BirdeyeTokenOverview(Base):
 	
 	# Basic info
 	price = Column(Float, nullable=True, comment="Current price")
-	market_cap = Column(Float, nullable=True, index=True, comment="Market cap")
-	fdv = Column(Float, nullable=True, comment="Fully diluted valuation")
-	liquidity = Column(Float, nullable=True, index=True, comment="Total liquidity")
+	market_cap = Column(Double, nullable=True, index=True, comment="Market cap")
+	fdv = Column(Double, nullable=True, comment="Fully diluted valuation")
+	liquidity = Column(Double, nullable=True, index=True, comment="Total liquidity")
 	
 	# Supply and holders
 	total_supply = Column(Float, nullable=True)
@@ -674,8 +656,8 @@ class BirdeyeTokenOverview(Base):
 	
 	# 24h metrics
 	price_change_24h_percent = Column(Float, nullable=True, comment="24h price change %")
-	v24h = Column(Float, nullable=True, comment="24h volume")
-	v24h_usd = Column(Float, nullable=True, comment="24h volume USD")
+	v24h = Column(Double, nullable=True, comment="24h volume")
+	v24h_usd = Column(Double, nullable=True, comment="24h volume USD")
 	trade_24h = Column(Integer, nullable=True, comment="24h trades")
 	buy_24h = Column(Integer, nullable=True)
 	sell_24h = Column(Integer, nullable=True)
@@ -698,6 +680,44 @@ class BirdeyeTokenOverview(Base):
 	__table_args__ = (
 		Index('idx_token_overview_created', 'token_address', 'created_at'),
 		Index('idx_market_cap_liquidity', 'market_cap', 'liquidity'),
+	)
+
+
+class BirdeyeTokenTrending(Base):
+	"""Birdeye热门代币趋势表 - Token trending/hot tokens from Birdeye."""
+	
+	__tablename__ = "birdeye_token_trending"
+	
+	id = Column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+	address = Column(String(64), nullable=False, index=True, comment="代币合约地址(唯一标识)")
+	symbol = Column(String(32), nullable=False, comment="代币符号")
+	name = Column(String(128), nullable=True, comment="代币全称")
+	decimals = Column(Integer, nullable=True, comment="代币精度")
+	rank = Column(Integer, nullable=True, index=True, comment="Birdeye热度排名")
+	
+	# 价格相关：使用高精度 Float 防止精度丢失
+	price = Column(Float, nullable=True, comment="当前价格(USD)")
+	
+	# 资金规模相关：使用 Double 类型存储更大的数值
+	marketcap = Column(Double, nullable=True, comment="流通市值")
+	fdv = Column(Double, nullable=True, comment="完全稀释估值")
+	liquidity = Column(Double, nullable=True, comment="池子流动性")
+	volume_24h_usd = Column(Double, nullable=True, comment="24小时交易量(USD)")
+	
+	# 涨跌幅相关
+	price_24h_change_percent = Column(Float, nullable=True, comment="24H价格涨跌幅(%)")
+	volume_24h_change_percent = Column(Float, nullable=True, comment="24H交易量涨跌幅(%)")
+	
+	# 其他信息
+	logo_uri = Column(String(512), nullable=True, comment="Logo图片链接")
+	data_source = Column(String(20), nullable=False, default="birdeye", comment="数据来源标记")
+	created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True, comment="抓取入库时间")
+	
+	__table_args__ = (
+		Index('idx_address', 'address'),
+		Index('idx_rank', 'rank'),
+		Index('idx_created_at', 'created_at'),
+		Index('idx_address_created', 'address', 'created_at'),
 	)
 
 

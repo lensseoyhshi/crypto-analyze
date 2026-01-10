@@ -2,7 +2,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from dateutil import parser as date_parser
@@ -14,7 +14,8 @@ from ..db.models import (
 	BirdeyeWalletToken,
 	BirdeyeNewListing,
 	BirdeyeTokenSecurity,
-	BirdeyeTokenOverview
+	BirdeyeTokenOverview,
+	BirdeyeTokenTrending
 )
 from ..api.schemas.birdeye import (
 	TransactionItem,
@@ -23,10 +24,54 @@ from ..api.schemas.birdeye import (
 	WalletTokenItem,
 	NewListingItem,
 	TokenSecurityData,
-	TokenOverviewData
+	TokenOverviewData,
+	TokenTrendingItem
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# 数据清理和验证工具函数
+# ============================================================================
+
+def safe_float(value: Union[float, int, None], max_value: float = 1e38) -> Optional[float]:
+	"""
+	安全地处理浮点数，避免数据库溢出。
+	
+	MySQL FLOAT 范围: ±3.402823466E+38
+	MySQL DOUBLE 范围: ±1.7976931348623157E+308
+	
+	Args:
+		value: 原始值
+		max_value: 最大允许值（默认 1e38，适用于 FLOAT）
+		
+	Returns:
+		处理后的安全值，如果超出范围则返回 None
+	"""
+	if value is None:
+		return None
+	
+	try:
+		float_value = float(value)
+		
+		# 检查是否为无穷大或 NaN
+		if not (-max_value <= float_value <= max_value):
+			logger.warning(f"Value {value} exceeds max_value {max_value}, setting to None")
+			return None
+		
+		return float_value
+	except (ValueError, TypeError, OverflowError) as e:
+		logger.warning(f"Failed to convert value {value} to float: {e}")
+		return None
+
+
+def safe_double(value: Union[float, int, None]) -> Optional[float]:
+	"""
+	安全地处理 DOUBLE 类型的浮点数。
+	对于 DOUBLE 类型，使用更大的范围（1e308）
+	"""
+	return safe_float(value, max_value=1e308)
 
 
 class BirdeyeRepository:
@@ -76,10 +121,10 @@ class BirdeyeRepository:
 				# Update existing record
 				existing_tx.quote = quote_json
 				existing_tx.base = base_json
-				existing_tx.basePrice = transaction.basePrice
-				existing_tx.quotePrice = transaction.quotePrice
-				existing_tx.pricePair = transaction.pricePair
-				existing_tx.tokenPrice = transaction.tokenPrice
+				existing_tx.basePrice = safe_double(transaction.basePrice)
+				existing_tx.quotePrice = safe_double(transaction.quotePrice)
+				existing_tx.pricePair = safe_double(transaction.pricePair)
+				existing_tx.tokenPrice = safe_double(transaction.tokenPrice)
 				existing_tx.source = transaction.source
 				existing_tx.blockUnixTime = transaction.blockUnixTime
 				existing_tx.txType = transaction.txType
@@ -100,10 +145,10 @@ class BirdeyeRepository:
 				db_tx = BirdeyeTokenTransaction(
 					quote=quote_json,
 					base=base_json,
-					basePrice=transaction.basePrice,
-					quotePrice=transaction.quotePrice,
-					pricePair=transaction.pricePair,
-					tokenPrice=transaction.tokenPrice,
+					basePrice=safe_double(transaction.basePrice),
+					quotePrice=safe_double(transaction.quotePrice),
+					pricePair=safe_double(transaction.pricePair),
+					tokenPrice=safe_double(transaction.tokenPrice),
 					txHash=transaction.txHash,
 					source=transaction.source,
 					blockUnixTime=transaction.blockUnixTime,
@@ -649,7 +694,7 @@ class BirdeyeRepository:
 				existing_listing.name = listing.name
 				existing_listing.decimals = listing.decimals
 				existing_listing.source = listing.source
-				existing_listing.liquidity = listing.liquidity
+				existing_listing.liquidity = safe_double(listing.liquidity)
 				existing_listing.liquidity_added_at = liquidity_added_at
 				existing_listing.logo_uri = listing.logoURI
 				existing_listing.update_time = datetime.utcnow()
@@ -667,7 +712,7 @@ class BirdeyeRepository:
 					name=listing.name,
 					decimals=listing.decimals,
 					source=listing.source,
-					liquidity=listing.liquidity,
+					liquidity=safe_double(listing.liquidity),
 					liquidity_added_at=liquidity_added_at,
 					logo_uri=listing.logoURI,
 					create_time=datetime.utcnow(),
@@ -986,7 +1031,7 @@ class BirdeyeRepository:
 		token_address: str,
 		overview: TokenOverviewData
 	) -> BirdeyeTokenOverview:
-		"""Save token overview information."""
+		"""Save token overview information with safe float handling."""
 		try:
 			# Parse last trade time
 			last_trade_time = None
@@ -998,26 +1043,26 @@ class BirdeyeRepository:
 			
 			db_overview = BirdeyeTokenOverview(
 				token_address=token_address,
-				price=overview.price,
-				market_cap=overview.marketCap,
-				fdv=overview.fdv,
-				liquidity=overview.liquidity,
-				total_supply=overview.totalSupply,
-				circulating_supply=overview.circulatingSupply,
+				price=safe_float(overview.price),
+				market_cap=safe_double(overview.marketCap),
+				fdv=safe_double(overview.fdv),
+				liquidity=safe_double(overview.liquidity),
+				total_supply=safe_float(overview.totalSupply),
+				circulating_supply=safe_float(overview.circulatingSupply),
 				holder=overview.holder,
 				number_markets=overview.numberMarkets,
-				price_change_24h_percent=overview.priceChange24hPercent,
-				v24h=overview.v24h,
-				v24h_usd=overview.v24hUSD,
+				price_change_24h_percent=safe_float(overview.priceChange24hPercent),
+				v24h=safe_double(overview.v24h),
+				v24h_usd=safe_double(overview.v24hUSD),
 				trade_24h=overview.trade24h,
 				buy_24h=overview.buy24h,
 				sell_24h=overview.sell24h,
 				unique_wallet_24h=overview.uniqueWallet24h,
-				price_change_1h_percent=overview.priceChange1hPercent,
-				v1h=overview.v1h,
-				v1h_usd=overview.v1hUSD,
-				v30m=overview.v30m,
-				v30m_usd=overview.v30mUSD,
+				price_change_1h_percent=safe_float(overview.priceChange1hPercent),
+				v1h=safe_double(overview.v1h),
+				v1h_usd=safe_double(overview.v1hUSD),
+				v30m=safe_double(overview.v30m),
+				v30m_usd=safe_double(overview.v30mUSD),
 				last_trade_unix_time=overview.lastTradeUnixTime,
 				last_trade_human_time=last_trade_time,
 				created_at=datetime.utcnow()
@@ -1034,4 +1079,117 @@ class BirdeyeRepository:
 			await self.session.rollback()
 			logger.error(f"Error saving token overview: {str(e)}")
 			raise
+	
+	# ========================================================================
+	# Token Trending
+	# ========================================================================
+	
+	async def save_or_update_token_trending(
+		self,
+		trending: TokenTrendingItem
+	) -> BirdeyeTokenTrending:
+		"""
+		Save or update a trending token based on address.
+		If address exists, update the record; otherwise insert new record.
+		
+		Args:
+			trending: TokenTrendingItem schema object
+			
+		Returns:
+			BirdeyeTokenTrending: The saved or updated database record
+		"""
+		try:
+			# 使用 safe_double 处理可能超出范围的大数值
+			# DECIMAL(30,30) 实际上是整数部分0位，小数部分30位，只能存储 0-1 之间的数
+			# 应该改用 safe_double 让数据库用 DOUBLE 类型存储
+			safe_marketcap = safe_double(trending.marketcap)
+			safe_fdv = safe_double(trending.fdv)
+			safe_liquidity = safe_double(trending.liquidity)
+			safe_volume = safe_double(trending.volume24hUSD)
+			
+			# Check if trending token already exists
+			query = select(BirdeyeTokenTrending).where(
+				BirdeyeTokenTrending.address == trending.address
+			)
+			result = await self.session.execute(query)
+			existing_trending = result.scalar_one_or_none()
+			
+			if existing_trending:
+				# Update existing record
+				existing_trending.symbol = trending.symbol
+				existing_trending.name = trending.name
+				existing_trending.decimals = trending.decimals
+				existing_trending.rank = trending.rank
+				existing_trending.price = safe_float(trending.price)
+				existing_trending.marketcap = safe_marketcap
+				existing_trending.fdv = safe_fdv
+				existing_trending.liquidity = safe_liquidity
+				existing_trending.volume_24h_usd = safe_volume
+				existing_trending.price_24h_change_percent = safe_float(trending.price24hChangePercent)
+				existing_trending.volume_24h_change_percent = safe_float(trending.volume24hChangePercent)
+				existing_trending.logo_uri = trending.logoURI
+				existing_trending.created_at = datetime.utcnow()  # Update timestamp
+				
+				await self.session.commit()
+				await self.session.refresh(existing_trending)
+				
+				logger.debug(f"Updated trending token: {trending.symbol} ({trending.address})")
+				return existing_trending
+			else:
+				# Insert new record
+				db_trending = BirdeyeTokenTrending(
+					address=trending.address,
+					symbol=trending.symbol,
+					name=trending.name,
+					decimals=trending.decimals,
+					rank=trending.rank,
+					price=safe_float(trending.price),
+					marketcap=safe_marketcap,
+					fdv=safe_fdv,
+					liquidity=safe_liquidity,
+					volume_24h_usd=safe_volume,
+					price_24h_change_percent=safe_float(trending.price24hChangePercent),
+					volume_24h_change_percent=safe_float(trending.volume24hChangePercent),
+					logo_uri=trending.logoURI,
+					data_source="birdeye",
+					created_at=datetime.utcnow()
+				)
+				
+				self.session.add(db_trending)
+				await self.session.commit()
+				await self.session.refresh(db_trending)
+				
+				logger.debug(f"Inserted new trending token: {trending.symbol} ({trending.address})")
+				return db_trending
+			
+		except Exception as e:
+			await self.session.rollback()
+			logger.error(f"Error saving or updating trending token {trending.address}: {str(e)}")
+			raise
+	
+	async def save_or_update_token_trending_batch(
+		self,
+		trending_tokens: List[TokenTrendingItem]
+	) -> int:
+		"""
+		Save or update multiple trending tokens in batch.
+		Each token is checked by address and updated if exists or inserted if not.
+		
+		Args:
+			trending_tokens: List of TokenTrendingItem objects
+			
+		Returns:
+			int: Number of successfully saved/updated tokens
+		"""
+		saved_count = 0
+		for trending in trending_tokens:
+			try:
+				await self.save_or_update_token_trending(trending)
+				saved_count += 1
+			except Exception as e:
+				logger.warning(f"Failed to save/update trending token {trending.address}: {str(e)}")
+				continue
+		
+		logger.info(f"Saved/Updated {saved_count}/{len(trending_tokens)} trending tokens")
+		return saved_count
 

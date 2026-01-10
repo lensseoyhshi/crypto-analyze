@@ -1,5 +1,5 @@
 """Birdeye API response schemas."""
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Union
 from datetime import datetime
 from pydantic import BaseModel, Field
 
@@ -10,7 +10,7 @@ class TokenInfo(BaseModel):
     symbol: str
     decimals: int
     address: str
-    amount: str
+    amount: Union[str, int, float]  # API可能返回字符串、整数或浮点数
     uiAmount: float
     price: float
     nearestPrice: float
@@ -357,5 +357,39 @@ class TokenOverviewData(BaseModel):
 class TokenOverviewResponse(BaseModel):
     """Response from token overview API."""
     data: TokenOverviewData
+    success: bool
+
+
+# Schema for token trending
+class TokenTrendingItem(BaseModel):
+    """Token trending item."""
+    address: str
+    decimals: int
+    fdv: float
+    liquidity: float
+    logoURI: Optional[str] = None
+    marketcap: float
+    name: str
+    price: float
+    rank: int
+    symbol: str
+    volume24hUSD: float
+    volume24hChangePercent: Optional[float] = None
+    price24hChangePercent: Optional[float] = None
+    isScaledUiToken: bool = False
+    multiplier: Optional[Any] = None
+
+
+class TokenTrendingData(BaseModel):
+    """Data wrapper for token trending."""
+    updateUnixTime: int
+    updateTime: str
+    tokens: List[TokenTrendingItem]
+    total: int
+
+
+class TokenTrendingResponse(BaseModel):
+    """Response from token trending API."""
+    data: TokenTrendingData
     success: bool
 

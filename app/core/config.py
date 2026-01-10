@@ -13,7 +13,7 @@ class Settings(BaseSettings):
 	
 	# Database
 	DATABASE_URL: str = Field(
-		default="mysql+aiomysql://root:12345678@localhost:3306/crypto_analyze"
+		default="mysql+aiomysql://root:12345678@localhost:3306/crypto-analyze"
 	)
 	
 	# API Keys
@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 	BIRDEYE_TOKEN_TRANSACTIONS_INTERVAL: int = Field(default=120, description="Seconds between transaction fetches")
 	BIRDEYE_TOP_TRADERS_INTERVAL: int = Field(default=300, description="Seconds between top traders fetches")
 	BIRDEYE_WALLET_PORTFOLIO_INTERVAL: int = Field(default=600, description="Seconds between wallet portfolio fetches")
+	BIRDEYE_TOKEN_TRENDING_INTERVAL: int = Field(default=3600, description="Seconds between token trending fetches (1 hour)")
 	
 	# Tokens to track (comma-separated list)
 	TRACKED_TOKENS: str = Field(

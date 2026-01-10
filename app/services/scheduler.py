@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from ..api.clients.dexscreener import DexscreenerClient
 from ..api.clients.birdeye import BirdeyeClient
 from ..db.session import get_async_session
-from ..repositories.raw_api_repository import RawApiRepository
 from ..repositories.dexscreener_repository import DexscreenerRepository
 from ..repositories.birdeye_repository import BirdeyeRepository
 from ..core.config import settings
@@ -28,13 +27,14 @@ def start_background_tasks(app: FastAPI):
 	
 	# Start all background tasks
 	tasks_to_start = [
-		(_dexscreener_poller(), "Dexscreener poller", settings.DEXSCREENER_FETCH_INTERVAL),
+		# (_dexscreener_poller(), "Dexscreener poller", settings.DEXSCREENER_FETCH_INTERVAL),  # Temporarily disabled
 		(_birdeye_new_listings_poller(), "Birdeye new listings", settings.BIRDEYE_NEW_LISTINGS_INTERVAL),
 		(_birdeye_token_overview_poller(), "Birdeye token overview", settings.BIRDEYE_TOKEN_OVERVIEW_INTERVAL),
 		# (_birdeye_token_security_poller(), "Birdeye token security", settings.BIRDEYE_TOKEN_SECURITY_INTERVAL),
 		# (_birdeye_token_transactions_poller(), "Birdeye token transactions", settings.BIRDEYE_TOKEN_TRANSACTIONS_INTERVAL),
 		(_birdeye_top_traders_poller(), "Birdeye top traders", settings.BIRDEYE_TOP_TRADERS_INTERVAL),
 		(_birdeye_wallet_portfolio_poller(), "Birdeye wallet portfolio", settings.BIRDEYE_WALLET_PORTFOLIO_INTERVAL),
+		(_birdeye_token_trending_poller(), "Birdeye token trending", settings.BIRDEYE_TOKEN_TRENDING_INTERVAL),
 	]
 	
 	for task_coro, name, interval in tasks_to_start:
@@ -89,6 +89,9 @@ async def _fetch_token_security_async(token_address: str):
 		else:
 			logger.warning(f"[Async] Failed to fetch security for {token_address}: {response.dict()}")
 			
+	except asyncio.CancelledError:
+		logger.debug(f"[Async] Token security fetch cancelled for {token_address}")
+		raise  # Re-raise to properly cancel the task
 	except Exception as e:
 		logger.error(f"[Async] Error fetching token security for {token_address}: {str(e)}", exc_info=True)
 	finally:
@@ -118,6 +121,9 @@ async def _fetch_token_transactions_async(token_address: str, limit: int = 50):
 		else:
 			logger.warning(f"[Async] Failed to fetch transactions for {token_address}: {response.dict()}")
 			
+	except asyncio.CancelledError:
+		logger.debug(f"[Async] Token transactions fetch cancelled for {token_address}")
+		raise  # Re-raise to properly cancel the task
 	except Exception as e:
 		logger.error(f"[Async] Error fetching token transactions for {token_address}: {str(e)}", exc_info=True)
 	finally:
@@ -142,17 +148,8 @@ async def _dexscreener_poller():
 				# Fetch data from API
 				response = await client.fetch_top_boosts()
 				
-				# Save to both raw and structured tables
+				# Save to structured tables
 				async for session in get_async_session():
-					# Save raw response
-					raw_repo = RawApiRepository(session)
-					await raw_repo.save_response(
-						endpoint="/token-boosts/top/v1",
-						source="dexscreener",
-						response_data=response.dict(),
-						status_code=200
-					)
-					
 					# Save or update structured data
 					dex_repo = DexscreenerRepository(session)
 					
@@ -196,25 +193,18 @@ async def _birdeye_new_listings_poller():
 	poll_count = 0
 	
 	try:
+		logger.info("[Birdeye] New listings poller started - executing first fetch immediately")
+		
 		while True:
 			poll_count += 1
 			try:
 				logger.info(f"[Birdeye] Fetching new listings (poll #{poll_count})")
 				
-				# Fetch new listings
-				response = await client.get_new_listings(limit=50)
+				# Fetch new listings (API limit: max 20 per request)
+				response = await client.get_new_listings(limit=20)
 				
 				if response.success:
 					async for session in get_async_session():
-						# Save raw response
-						raw_repo = RawApiRepository(session)
-						await raw_repo.save_response(
-							endpoint="/defi/v2/tokens/new_listing",
-							source="birdeye",
-							response_data=response.dict(),
-							status_code=200
-						)
-						
 						# Save or update structured data (check by address)
 						birdeye_repo = BirdeyeRepository(session)
 						await birdeye_repo.save_or_update_new_listings_batch(response.data.items)
@@ -246,6 +236,7 @@ async def _birdeye_new_listings_poller():
 			except Exception as e:
 				logger.error(f"[Birdeye] Error in new listings poller: {str(e)}", exc_info=True)
 			
+			logger.info(f"[Birdeye] Next new listings fetch in {settings.BIRDEYE_NEW_LISTINGS_INTERVAL} seconds")
 			await asyncio.sleep(settings.BIRDEYE_NEW_LISTINGS_INTERVAL)
 			
 	except asyncio.CancelledError:
@@ -501,6 +492,94 @@ async def _birdeye_wallet_portfolio_poller():
 			
 	except asyncio.CancelledError:
 		logger.info("[Birdeye] Wallet portfolio poller cancelled")
+		raise
+	finally:
+		await client.close()
+
+
+async def _birdeye_token_trending_poller():
+	"""Fetch trending tokens from Birdeye and save to database with pagination."""
+	client = BirdeyeClient()
+	poll_count = 0
+	
+	try:
+		# 立即执行第一次，不等待
+		logger.info("[Birdeye] Token trending poller started - executing first fetch immediately")
+		
+		while True:
+			poll_count += 1
+			try:
+				logger.info(f"[Birdeye] Fetching token trending (poll #{poll_count})")
+				
+				total_saved = 0
+				offset = 0
+				limit = 20  # API max limit per request
+				max_pages = 50  # 最多获取50页，避免无限循环
+				
+				# 分页查询
+				for page in range(max_pages):
+					try:
+						# Fetch trending tokens
+						response = await client.get_token_trending(
+							sort_by="rank",
+							sort_type="asc",
+							interval="24h",
+							offset=offset,
+							limit=limit
+						)
+						
+						if response.success and response.data.tokens:
+							async for session in get_async_session():
+								# Save or update structured data (check by address)
+								birdeye_repo = BirdeyeRepository(session)
+								count = await birdeye_repo.save_or_update_token_trending_batch(
+									response.data.tokens
+								)
+								total_saved += count
+								
+								logger.info(f"[Birdeye] Page {page + 1}: Saved/Updated {count} trending tokens")
+								
+								# Create background tasks for each token
+								# 为每个热门代币创建后台任务：获取安全信息和交易记录
+								for token in response.data.tokens:
+									address = token.address
+									# 异步获取代币安全信息
+									asyncio.create_task(_fetch_token_security_async(address))
+									# 异步获取代币交易记录
+									asyncio.create_task(_fetch_token_transactions_async(address, limit=50))
+								
+								logger.info(f"[Birdeye] Created background tasks for {len(response.data.tokens)} tokens")
+								break
+							
+							# 如果返回的数量少于limit，说明已经到最后一页了
+							if len(response.data.tokens) < limit:
+								logger.info(f"[Birdeye] Reached last page at page {page + 1}")
+								break
+							
+							# 准备下一页
+							offset += limit
+							
+							# 延迟避免请求过快
+							await asyncio.sleep(1)
+						else:
+							logger.warning(f"[Birdeye] No more trending tokens at offset {offset}")
+							break
+							
+					except Exception as e:
+						logger.error(f"[Birdeye] Error fetching page {page + 1}: {str(e)}", exc_info=True)
+						break
+				
+				logger.info(f"[Birdeye] Completed trending fetch: Total saved/updated {total_saved} tokens (poll #{poll_count})")
+						
+			except Exception as e:
+				logger.error(f"[Birdeye] Error in token trending poller: {str(e)}", exc_info=True)
+			
+			# 执行完成后等待下一个周期
+			logger.info(f"[Birdeye] Next trending fetch in {settings.BIRDEYE_TOKEN_TRENDING_INTERVAL} seconds ({settings.BIRDEYE_TOKEN_TRENDING_INTERVAL/3600:.1f} hours)")
+			await asyncio.sleep(settings.BIRDEYE_TOKEN_TRENDING_INTERVAL)
+			
+	except asyncio.CancelledError:
+		logger.info("[Birdeye] Token trending poller cancelled")
 		raise
 	finally:
 		await client.close()

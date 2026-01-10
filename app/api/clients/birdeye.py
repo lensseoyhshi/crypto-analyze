@@ -1,4 +1,6 @@
 """Birdeye API client."""
+import datetime
+import time
 import logging
 from typing import Optional, Dict, Any
 from .base_client import BaseApiClient
@@ -11,6 +13,7 @@ from ..schemas.birdeye import (
 	NewListingsResponse,
 	TokenSecurityResponse,
 	TokenOverviewResponse,
+	TokenTrendingResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,9 @@ class BirdeyeClient(BaseApiClient):
 		tx_type: str = "swap",
 		offset: int = 0,
 		limit: int = 100,
+		before_time: Optional[int] = None,
+		after_time: Optional[int] = None,
+		ui_amount_mode: str = "scaled",
 		chain: str = "solana"
 	) -> TransactionsResponse:
 		"""
@@ -45,24 +51,44 @@ class BirdeyeClient(BaseApiClient):
 		
 		Args:
 			token_address: Token address to query
-			tx_type: Transaction type (e.g., "swap")
-			offset: Pagination offset
-			limit: Number of results to return
+			tx_type: Transaction type (e.g., "swap", "add", "remove", "all")
+			offset: Pagination offset (0 to 10000)
+			limit: Number of results to return (1 to 100)
+			before_time: Unix timestamp to fetch transactions before
+			after_time: Unix timestamp to fetch transactions after
+			ui_amount_mode: Whether to use scaled amount ("scaled" or "raw")
 			chain: Blockchain network (default: "solana")
 			
 		Returns:
 			TransactionsResponse: Parsed transaction data
 		"""
 		logger.info(f"Fetching transactions for token {token_address}")
-		payload = {
+		
+		# API requires either before_time or after_time parameter
+		# If neither is provided, use current time as before_time to fetch recent transactions
+		if before_time is None and after_time is None:
+			before_time = int(time.time())
+			logger.debug(f"No time filter provided, using current time as before_time: {before_time}")
+		
+		# Build query parameters
+		params = {
 			"address": token_address,
 			"tx_type": tx_type,
 			"offset": offset,
-			"limit": limit,
+			"limit": min(limit, 100),  # API limit max 100
+			"ui_amount_mode": ui_amount_mode,
 		}
-		data = await self.post(
+		
+		# Add time filters
+		if before_time:
+			params["before_time"] = before_time
+		if after_time:
+			params["after_time"] = after_time
+		
+		# Use GET request with query parameters (not POST)
+		data = await self.get(
 			"/defi/txs/token/seek_by_time",
-			json=payload,
+			params=params,
 			headers=self._get_headers(chain)
 		)
 		return TransactionsResponse(**data)
@@ -167,31 +193,29 @@ class BirdeyeClient(BaseApiClient):
 	# 查询最近新上币的接口
 	async def get_new_listings(
 		self,
-		sort_by: str = "liquidity",
-		sort_type: str = "desc",
-		offset: int = 0,
-		limit: int = 50,
+		limit: int = 20,
+		meme_platform_enabled: bool = False,
 		chain: str = "solana"
 	) -> NewListingsResponse:
 		"""
 		Get newly listed tokens.
 		
 		Args:
-			sort_by: Field to sort by (e.g., "liquidity", "volume")
-			sort_type: Sort direction ("asc" or "desc")
-			offset: Pagination offset
-			limit: Number of results to return
+			limit: Number of results to return (1-20, default: 20)
+			meme_platform_enabled: Enable to receive token new listing from meme platforms (eg: pump.fun)
 			chain: Blockchain network (default: "solana")
 			
 		Returns:
 			NewListingsResponse: New token listings
 		"""
-		logger.info("Fetching new token listings")
+		# 确保 limit 在有效范围内 (1-20)
+		limit = max(1, min(limit, 20))
+		
+		logger.info(f"Fetching new token listings (limit={limit}, meme_platform_enabled={meme_platform_enabled})")
 		params = {
-			"sort_by": sort_by,
-			"sort_type": sort_type,
-			"offset": offset,
+			"time_to": int(time.time()),
 			"limit": limit,
+			"meme_platform_enabled": meme_platform_enabled,
 		}
 		data = await self.get(
 			"/defi/v2/tokens/new_listing",
@@ -249,5 +273,44 @@ class BirdeyeClient(BaseApiClient):
 			headers=self._get_headers(chain)
 		)
 		return TokenOverviewResponse(**data)
+
+	# 获取热门/趋势代币数据
+	async def get_token_trending(
+		self,
+		sort_by: str = "rank",
+		sort_type: str = "asc",
+		interval: str = "24h",
+		offset: int = 0,
+		limit: int = 20,
+		chain: str = "solana"
+	) -> TokenTrendingResponse:
+		"""
+		Get trending/hot tokens data.
+		
+		Args:
+			sort_by: Sort field (rank, volumeUSD, liquidity)
+			sort_type: Sort order (asc or desc)
+			interval: Time interval (1h, 4h, 24h)
+			offset: Pagination offset
+			limit: Number of results to return (1-20)
+			chain: Blockchain network (default: "solana")
+			
+		Returns:
+			TokenTrendingResponse: Trending tokens data
+		"""
+		logger.info(f"Fetching token trending (offset={offset}, limit={limit})")
+		params = {
+			"sort_by": sort_by,
+			"sort_type": sort_type,
+			"interval": interval,
+			"offset": offset,
+			"limit": min(limit, 20),  # API限制最大20
+		}
+		data = await self.get(
+			"/defi/token_trending",
+			params=params,
+			headers=self._get_headers(chain)
+		)
+		return TokenTrendingResponse(**data)
 
 

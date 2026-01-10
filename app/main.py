@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from .core.config import settings
 from .services import scheduler
-from .api.routes import data
 
 # Configure logging
 logging.basicConfig(
@@ -39,7 +38,7 @@ app = FastAPI(
 )
 
 # Include routers
-app.include_router(data.router)
+# (data router removed - raw_api_responses table not used)
 
 
 @app.get("/health")
@@ -58,12 +57,7 @@ def root():
 	return {
 		"message": "Crypto Analyze API",
 		"docs": "/docs",
-		"health": "/health",
-		"data": {
-			"responses": "/data/responses",
-			"stats": "/data/stats",
-			"sources": "/data/sources"
-		}
+		"health": "/health"
 	}
 
 
