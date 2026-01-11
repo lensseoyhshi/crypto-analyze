@@ -98,30 +98,37 @@ class BirdeyeClient(BaseApiClient):
 	async def get_top_traders(
 		self,
 		token_address: str,
-		time_range: str = "24h",
+		time_frame: str = "24h",
+		sort_type: str = "desc",
+		sort_by: str = "volume",
 		offset: int = 0,
 		limit: int = 10,
-		chain: str = "solana"
+		ui_amount_mode: str = "scaled"
 	) -> TopTradersResponse:
 		"""
 		Get top traders for a specific token.
 		
 		Args:
 			token_address: Token address to query
-			time_range: Time range for analysis (e.g., "24h", "7d")
-			offset: Pagination offset
-			limit: Number of results to return
-			chain: Blockchain network (default: "solana")
+			time_frame: Time frame for analysis (e.g., "24h", "7d", "30d") - defaults to 24h
+			sort_type: Sort order - "desc" or "asc" (defaults to desc)
+			sort_by: Sort field - "volume" or "trade" (defaults to volume)
+			offset: Pagination offset (0 to 10000)
+			limit: Number of results to return (1 to 10, defaults to 10)
+			ui_amount_mode: "raw" or "scaled" for Solana tokens (defaults to scaled)
 			
 		Returns:
 			TopTradersResponse: Top traders data
 		"""
-		logger.info(f"Fetching top traders for token {token_address}")
+		logger.info(f"Fetching top traders for token {token_address} (time_frame={time_frame}, sort_by={sort_by})")
 		params = {
 			"address": token_address,
-			"type": time_range,
+			"type": time_frame,  # API uses 'type' as parameter name
+			"sort_type": sort_type,
+			"sort_by": sort_by,
 			"offset": offset,
 			"limit": limit,
+			"ui_amount_mode": ui_amount_mode,
 		}
 		data = await self.get(
 			"/defi/v2/tokens/top_traders",
@@ -135,7 +142,7 @@ class BirdeyeClient(BaseApiClient):
 		self,
 		wallet_address: str,
 		before: Optional[int] = None,
-		limit: int = 10,
+		limit: int = 100,
 		chain: str = "solana"
 	) -> WalletTransactionsResponse:
 		"""

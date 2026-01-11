@@ -1,7 +1,7 @@
 """Background task scheduler for periodic API polling."""
 import asyncio
 import logging
-from typing import Set
+from typing import Set, Optional
 from fastapi import FastAPI
 from ..api.clients.dexscreener import DexscreenerClient
 from ..api.clients.birdeye import BirdeyeClient
@@ -32,7 +32,7 @@ def start_background_tasks(app: FastAPI):
 		(_birdeye_token_overview_poller(), "Birdeye token overview", settings.BIRDEYE_TOKEN_OVERVIEW_INTERVAL),
 		# (_birdeye_token_security_poller(), "Birdeye token security", settings.BIRDEYE_TOKEN_SECURITY_INTERVAL),
 		# (_birdeye_token_transactions_poller(), "Birdeye token transactions", settings.BIRDEYE_TOKEN_TRANSACTIONS_INTERVAL),
-		(_birdeye_top_traders_poller(), "Birdeye top traders", settings.BIRDEYE_TOP_TRADERS_INTERVAL),
+		# (_birdeye_top_traders_poller(), "Birdeye top traders", settings.BIRDEYE_TOP_TRADERS_INTERVAL),  # 现在由 trending poller 触发
 		(_birdeye_wallet_portfolio_poller(), "Birdeye wallet portfolio", settings.BIRDEYE_WALLET_PORTFOLIO_INTERVAL),
 		(_birdeye_token_trending_poller(), "Birdeye token trending", settings.BIRDEYE_TOKEN_TRENDING_INTERVAL),
 	]
@@ -98,34 +98,250 @@ async def _fetch_token_security_async(token_address: str):
 		await birdeye_client.close()
 
 
-async def _fetch_token_transactions_async(token_address: str, limit: int = 50):
+async def _fetch_token_transactions_async(
+	token_address: str, 
+	max_transactions: int = 200,
+	tx_type: str = "swap",
+	before_time: Optional[int] = None,
+	after_time: Optional[int] = None,
+	fetch_wallet_data: bool = True  # 新增：是否获取钱包数据
+):
 	"""
-	Asynchronously fetch token transactions and save to database.
+	Asynchronously fetch token transactions with pagination and save to database.
 	If transaction (txHash) exists in database, update it; otherwise insert new record.
+	Also extracts wallet addresses and fetches wallet transactions and portfolio data.
 	
 	Args:
 		token_address: Token address to query
-		limit: Number of transactions to fetch
+		max_transactions: Maximum number of transactions to fetch (will use pagination)
+		tx_type: Transaction type - "swap", "add", "remove", or "all"
+		before_time: Unix timestamp to fetch transactions before
+		after_time: Unix timestamp to fetch transactions after
+		fetch_wallet_data: Whether to fetch wallet transactions and portfolio data
 	"""
 	birdeye_client = BirdeyeClient()
 	try:
-		logger.info(f"[Async] Fetching token transactions for {token_address}")
-		response = await birdeye_client.get_token_transactions(token_address, limit=limit)
+		logger.info(f"[Async] Fetching token transactions for {token_address} (tx_type={tx_type}, max={max_transactions})")
 		
-		if response.success:
-			async for session in get_async_session():
-				birdeye_repo = BirdeyeRepository(session)
-				count = await birdeye_repo.save_or_update_token_transactions_batch(token_address, response.data.items)
-				logger.info(f"[Async] Saved/Updated {count} transactions for {token_address}")
+		total_saved = 0
+		all_wallet_addresses = set()  # 收集所有钱包地址
+		offset = 0
+		limit = 100  # API max limit per request
+		max_pages = (max_transactions + limit - 1) // limit  # Calculate number of pages needed
+		
+		# 分页获取 transactions
+		for page in range(max_pages):
+			try:
+				response = await birdeye_client.get_token_transactions(
+					token_address=token_address,
+					tx_type=tx_type,
+					offset=offset,
+					limit=limit,
+					before_time=before_time,
+					after_time=after_time
+				)
+				
+				if response.success and response.data.items:
+					async for session in get_async_session():
+						birdeye_repo = BirdeyeRepository(session)
+						count = await birdeye_repo.save_or_update_token_transactions_batch(
+							token_address, 
+							response.data.items
+						)
+						total_saved += count
+						logger.info(f"[Async] Page {page + 1}: Saved/Updated {count} transactions for {token_address}")
+						break
+					
+					# 收集钱包地址
+					if fetch_wallet_data:
+						for tx in response.data.items:
+							if tx.owner:  # owner 就是钱包地址
+								all_wallet_addresses.add(tx.owner)
+					
+					# 如果返回的数量少于 limit，说明已经到最后一页了
+					if len(response.data.items) < limit:
+						logger.info(f"[Async] Reached last page at page {page + 1} for {token_address}")
+						break
+					
+					# 准备下一页
+					offset += limit
+					
+					# 延迟避免请求过快
+					await asyncio.sleep(0.2)
+				else:
+					logger.warning(f"[Async] No more transactions at offset {offset} for {token_address}")
+					break
+					
+			except Exception as e:
+				logger.error(f"[Async] Error fetching page {page + 1} for {token_address}: {str(e)}")
 				break
-		else:
-			logger.warning(f"[Async] Failed to fetch transactions for {token_address}: {response.dict()}")
+		
+		logger.info(f"[Async] Completed: Total saved/updated {total_saved} transactions for {token_address}")
+		
+		# 为收集到的钱包地址创建后台任务获取钱包数据
+		# if fetch_wallet_data and all_wallet_addresses:
+		# 	logger.info(f"[Async] Found {len(all_wallet_addresses)} unique wallet addresses, creating background tasks...")
+		# 	for wallet_address in all_wallet_addresses:
+		# 		# 为每个钱包地址创建异步任务获取交易历史和投资组合
+		# 		asyncio.create_task(_fetch_wallet_transactions_async(wallet_address))
+		# 		asyncio.create_task(_fetch_wallet_portfolio_async(wallet_address))
+		# 	logger.info(f"[Async] Created wallet data fetch tasks for {len(all_wallet_addresses)} wallets")
 			
 	except asyncio.CancelledError:
 		logger.debug(f"[Async] Token transactions fetch cancelled for {token_address}")
 		raise  # Re-raise to properly cancel the task
 	except Exception as e:
 		logger.error(f"[Async] Error fetching token transactions for {token_address}: {str(e)}", exc_info=True)
+	finally:
+		await birdeye_client.close()
+
+
+async def _fetch_wallet_transactions_async(wallet_address: str, limit: int = 10):
+	"""
+	Asynchronously fetch wallet transaction history and save to database.
+	
+	Args:
+		wallet_address: Wallet address to query
+		limit: Number of transactions to fetch
+	"""
+	birdeye_client = BirdeyeClient()
+	try:
+		logger.info(f"[Async] Fetching wallet transactions for {wallet_address}")
+		response = await birdeye_client.get_wallet_transactions(wallet_address, limit=limit)
+		
+		if response.success and response.data:
+			async for session in get_async_session():
+				birdeye_repo = BirdeyeRepository(session)
+				# 保存钱包交易历史
+				count = 0
+				for tx in response.data:
+					try:
+						await birdeye_repo.save_wallet_transaction(wallet_address, tx)
+						count += 1
+					except Exception as e:
+						logger.debug(f"[Async] Failed to save wallet transaction {tx.txHash}: {str(e)}")
+						continue
+				logger.info(f"[Async] Saved {count} wallet transactions for {wallet_address}")
+				break
+		else:
+			logger.debug(f"[Async] No wallet transactions found for {wallet_address}")
+			
+	except asyncio.CancelledError:
+		logger.debug(f"[Async] Wallet transactions fetch cancelled for {wallet_address}")
+		raise
+	except Exception as e:
+		logger.error(f"[Async] Error fetching wallet transactions for {wallet_address}: {str(e)}", exc_info=True)
+	finally:
+		await birdeye_client.close()
+
+
+async def _fetch_wallet_portfolio_async(wallet_address: str):
+	"""
+	Asynchronously fetch wallet portfolio (token holdings) and save to database.
+	
+	Args:
+		wallet_address: Wallet address to query
+	"""
+	birdeye_client = BirdeyeClient()
+	try:
+		logger.info(f"[Async] Fetching wallet portfolio for {wallet_address}")
+		response = await birdeye_client.get_wallet_portfolio(wallet_address)
+		
+		if response.success and response.data.items:
+			async for session in get_async_session():
+				birdeye_repo = BirdeyeRepository(session)
+				# 保存钱包投资组合
+				count = await birdeye_repo.save_or_update_wallet_tokens_batch(
+					wallet_address,
+					response.data.items
+				)
+				logger.info(f"[Async] Saved/Updated {count} tokens for wallet {wallet_address}")
+				break
+		else:
+			logger.debug(f"[Async] No tokens found in wallet {wallet_address}")
+			
+	except asyncio.CancelledError:
+		logger.debug(f"[Async] Wallet portfolio fetch cancelled for {wallet_address}")
+		raise
+	except Exception as e:
+		logger.error(f"[Async] Error fetching wallet portfolio for {wallet_address}: {str(e)}", exc_info=True)
+	finally:
+		await birdeye_client.close()
+
+
+async def _fetch_token_top_traders_async(
+	token_address: str, 
+	time_frame: str = "24h", 
+	max_traders: int = 100,
+	sort_by: str = "volume"
+):
+	"""
+	Asynchronously fetch token top traders with pagination and save to database.
+	If tokenAddress + owner combination exists in database, update it; otherwise insert new record.
+	
+	Args:
+		token_address: Token address to query
+		time_frame: Time frame for top traders (e.g., "24h", "7d", "30d")
+		max_traders: Maximum number of top traders to fetch (will use pagination)
+		sort_by: Sort field - "volume" or "trade"
+	"""
+	birdeye_client = BirdeyeClient()
+	try:
+		logger.info(f"[Async] Fetching top traders for {token_address} (time_frame={time_frame}, max={max_traders})")
+		
+		total_saved = 0
+		offset = 0
+		limit = 10  # API max limit per request
+		max_pages = (max_traders + limit - 1) // limit  # Calculate number of pages needed
+		
+		# 分页获取 top traders
+		for page in range(max_pages):
+			try:
+				response = await birdeye_client.get_top_traders(
+					token_address=token_address,
+					time_frame=time_frame,
+					sort_by=sort_by,
+					sort_type="desc",
+					offset=offset,
+					limit=limit
+				)
+				
+				if response.success and response.data.items:
+					async for session in get_async_session():
+						birdeye_repo = BirdeyeRepository(session)
+						count = await birdeye_repo.save_or_update_top_traders_batch(
+							token_address, 
+							response.data.items
+						)
+						total_saved += count
+						logger.info(f"[Async] Page {page + 1}: Saved/Updated {count} top traders for {token_address}")
+						break
+					
+					# 如果返回的数量少于 limit，说明已经到最后一页了
+					if len(response.data.items) < limit:
+						logger.info(f"[Async] Reached last page at page {page + 1} for {token_address}")
+						break
+					
+					# 准备下一页
+					offset += limit
+					
+					# 延迟避免请求过快
+					await asyncio.sleep(0.3)
+				else:
+					logger.warning(f"[Async] No more top traders at offset {offset} for {token_address}")
+					break
+					
+			except Exception as e:
+				logger.error(f"[Async] Error fetching page {page + 1} for {token_address}: {str(e)}")
+				break
+		
+		logger.info(f"[Async] Completed: Total saved/updated {total_saved} top traders for {token_address}")
+			
+	except asyncio.CancelledError:
+		logger.debug(f"[Async] Top traders fetch cancelled for {token_address}")
+		raise  # Re-raise to properly cancel the task
+	except Exception as e:
+		logger.error(f"[Async] Error fetching top traders for {token_address}: {str(e)}", exc_info=True)
 	finally:
 		await birdeye_client.close()
 
@@ -165,7 +381,7 @@ async def _dexscreener_poller():
 						
 						# Create background tasks for each token
 						asyncio.create_task(_fetch_token_security_async(token_address))
-						asyncio.create_task(_fetch_token_transactions_async(token_address, limit=50))
+						asyncio.create_task(_fetch_token_transactions_async(token_address, max_transactions=200))
 					
 					logger.info(f"[Dexscreener] Saved {len(response.items)} boosts (poll #{poll_count})")
 					break
@@ -344,7 +560,7 @@ async def _birdeye_token_security_poller():
 
 
 async def _birdeye_token_transactions_poller():
-	"""Fetch token transactions for tracked tokens."""
+	"""Fetch token transactions for tracked tokens with pagination support."""
 	client = BirdeyeClient()
 	poll_count = 0
 	
@@ -359,28 +575,51 @@ async def _birdeye_token_transactions_poller():
 			
 			try:
 				logger.info(f"[Birdeye] Fetching transactions for {len(_tracked_tokens)} tokens (poll #{poll_count})")
-				saved_count = 0
+				total_saved = 0
 				
 				for token_address in list(_tracked_tokens):
 					try:
-						response = await client.get_token_transactions(token_address, limit=50)
+						# 分页获取 transactions
+						offset = 0
+						limit = 100  # API max limit
+						max_transactions = 200  # 每个代币最多获取 200 笔交易
+						token_saved = 0
 						
-						if response.success:
-							async for session in get_async_session():
-								birdeye_repo = BirdeyeRepository(session)
-								count = await birdeye_repo.save_token_transactions_batch(
-									token_address,
-									response.data.items
-								)
-								saved_count += count
+						for page in range((max_transactions + limit - 1) // limit):
+							response = await client.get_token_transactions(
+								token_address=token_address,
+								tx_type="swap",
+								offset=offset,
+								limit=limit
+							)
+							
+							if response.success and response.data.items:
+								async for session in get_async_session():
+									birdeye_repo = BirdeyeRepository(session)
+									count = await birdeye_repo.save_or_update_token_transactions_batch(
+										token_address,
+										response.data.items
+									)
+									token_saved += count
+									break
+								
+								# 如果返回的数量少于 limit，说明已经到最后一页了
+								if len(response.data.items) < limit:
+									break
+								
+								offset += limit
+								await asyncio.sleep(0.2)
+							else:
 								break
 						
+						total_saved += token_saved
+						logger.debug(f"[Birdeye] Saved {token_saved} transactions for {token_address}")
 						await asyncio.sleep(0.5)
 						
 					except Exception as e:
 						logger.warning(f"[Birdeye] Failed to fetch transactions for {token_address}: {str(e)}")
 				
-				logger.info(f"[Birdeye] Saved {saved_count} transactions (poll #{poll_count})")
+				logger.info(f"[Birdeye] Saved/Updated {total_saved} transactions total (poll #{poll_count})")
 						
 			except Exception as e:
 				logger.error(f"[Birdeye] Error in token transactions poller: {str(e)}", exc_info=True)
@@ -395,7 +634,7 @@ async def _birdeye_token_transactions_poller():
 
 
 async def _birdeye_top_traders_poller():
-	"""Fetch top traders for tracked tokens."""
+	"""Fetch top traders for tracked tokens with pagination support."""
 	client = BirdeyeClient()
 	poll_count = 0
 	
@@ -410,28 +649,53 @@ async def _birdeye_top_traders_poller():
 			
 			try:
 				logger.info(f"[Birdeye] Fetching top traders for {len(_tracked_tokens)} tokens (poll #{poll_count})")
-				saved_count = 0
+				total_saved = 0
 				
 				for token_address in list(_tracked_tokens):
 					try:
-						response = await client.get_top_traders(token_address, time_range="24h", limit=10)
+						# 分页获取 top traders
+						offset = 0
+						limit = 10
+						max_traders = 50  # 每个代币最多获取 50 个 top traders
+						token_saved = 0
 						
-						if response.success:
-							async for session in get_async_session():
-								birdeye_repo = BirdeyeRepository(session)
-								count = await birdeye_repo.save_or_update_top_traders_batch(
-									token_address,
-									response.data.items
-								)
-								saved_count += count
+						for page in range((max_traders + limit - 1) // limit):
+							response = await client.get_top_traders(
+								token_address=token_address,
+								time_frame="24h",
+								sort_by="volume",
+								sort_type="desc",
+								offset=offset,
+								limit=limit
+							)
+							
+							if response.success and response.data.items:
+								async for session in get_async_session():
+									birdeye_repo = BirdeyeRepository(session)
+									count = await birdeye_repo.save_or_update_top_traders_batch(
+										token_address,
+										response.data.items
+									)
+									token_saved += count
+									break
+								
+								# 如果返回的数量少于 limit，说明已经到最后一页了
+								if len(response.data.items) < limit:
+									break
+								
+								offset += limit
+								await asyncio.sleep(0.3)
+							else:
 								break
 						
+						total_saved += token_saved
+						logger.debug(f"[Birdeye] Saved {token_saved} top traders for {token_address}")
 						await asyncio.sleep(0.5)
 						
 					except Exception as e:
 						logger.warning(f"[Birdeye] Failed to fetch top traders for {token_address}: {str(e)}")
 				
-				logger.info(f"[Birdeye] Saved/Updated {saved_count} top traders (poll #{poll_count})")
+				logger.info(f"[Birdeye] Saved/Updated {total_saved} top traders total (poll #{poll_count})")
 						
 			except Exception as e:
 				logger.error(f"[Birdeye] Error in top traders poller: {str(e)}", exc_info=True)
@@ -540,15 +804,26 @@ async def _birdeye_token_trending_poller():
 								logger.info(f"[Birdeye] Page {page + 1}: Saved/Updated {count} trending tokens")
 								
 								# Create background tasks for each token
-								# 为每个热门代币创建后台任务：获取安全信息和交易记录
+								# 为每个热门代币创建后台任务：获取安全信息、交易记录和 top traders
 								for token in response.data.tokens:
 									address = token.address
 									# 异步获取代币安全信息
 									asyncio.create_task(_fetch_token_security_async(address))
-									# 异步获取代币交易记录
-									asyncio.create_task(_fetch_token_transactions_async(address, limit=50))
+									# 异步获取代币交易记录（分页获取，最多 200 笔）
+									asyncio.create_task(_fetch_token_transactions_async(
+										address, 
+										max_transactions=200,
+										tx_type="swap"
+									))
+									# 异步获取代币 top traders（分页获取，最多 50 个）
+									asyncio.create_task(_fetch_token_top_traders_async(
+										address, 
+										time_frame="24h", 
+										max_traders=50,
+										sort_by="volume"
+									))
 								
-								logger.info(f"[Birdeye] Created background tasks for {len(response.data.tokens)} tokens")
+								logger.info(f"[Birdeye] Created background tasks (security, transactions, top traders) for {len(response.data.tokens)} tokens")
 								break
 							
 							# 如果返回的数量少于limit，说明已经到最后一页了

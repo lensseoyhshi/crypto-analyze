@@ -105,7 +105,7 @@ async def example_birdeye_top_traders(token_address: str):
     
     client = BirdeyeClient()
     try:
-        traders = await client.get_top_traders(token_address, time_range="24h", limit=5)
+        traders = await client.get_top_traders(token_address, time_frame="24h", limit=5)
         
         if traders.success:
             logger.info(f"\nTop 5 Traders (24h):")
