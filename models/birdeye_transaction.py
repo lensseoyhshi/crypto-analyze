@@ -18,9 +18,9 @@ class BirdeyeWalletTransaction(Base):
     
     __tablename__ = 'birdeye_wallet_transactions'
     __table_args__ = (
-        Index('uk_tx_hash', 'tx_hash', unique=True, comment='防止重复存储同一笔交易'),
-        Index('idx_from', 'from_address', comment='用于查询指定钱包的历史'),
-        Index('idx_block_time', 'block_time', comment='用于按时间排序查询'),
+        Index('uk_tx_hash', 'tx_hash', unique=True),
+        Index('idx_from', 'from'),  # 使用数据库中的实际列名
+        Index('idx_block_time', 'block_time'),
         Index('idx_block_number', 'block_number'),
         {'comment': 'Birdeye钱包历史交易记录表'}
     )
@@ -112,6 +112,13 @@ class BirdeyeWalletTransaction(Base):
         comment='交易时间戳，秒级'
     )
     
+    # 交易方向
+    side: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment='方向: buy,sell；只对 swap'
+    )
+    
     # 系统字段
     create_time: Mapped[datetime] = mapped_column(
         TIMESTAMP,
@@ -151,6 +158,7 @@ class BirdeyeWalletTransaction(Base):
             'contract_label': json.loads(self.contract_label) if self.contract_label else None,
             'token_transfers': json.loads(self.token_transfers) if self.token_transfers else None,
             'block_time_unix': self.block_time_unix,
+            'side': self.side,
             'create_time': self.create_time.isoformat() if self.create_time else None,
             'update_time': self.update_time.isoformat() if self.update_time else None,
         }

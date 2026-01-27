@@ -31,7 +31,7 @@ class HoldTimeCalculator:
     
     def get_wallet_transactions(self, address: str, days: int = 7) -> List[BirdeyeWalletTransaction]:
         """
-        获取钱包的交易记录（排除系统地址）
+        获取钱包的交易记录（排除系统地址，只查询 swap 和 unknown）
         :param address: 钱包地址
         :param days: 查询最近多少天的数据
         :return: 交易记录列表
@@ -40,11 +40,12 @@ class HoldTimeCalculator:
             # 计算时间范围
             cutoff_time = datetime.now() - timedelta(days=days)
             
-            # 使用原生 SQL 查询以支持 to != '11111111111111111111111111111111' 条件
+            # 使用原生 SQL 查询
             sql = text("""
                 SELECT * FROM birdeye_wallet_transactions 
                 WHERE `from` = :address 
                 AND `to` != '11111111111111111111111111111111'
+                AND main_action IN ('swap', 'unknown')
                 AND block_time >= :cutoff_time
                 ORDER BY block_time ASC
             """)
@@ -71,6 +72,7 @@ class HoldTimeCalculator:
                 tx.contract_label = row.contract_label
                 tx.token_transfers = row.token_transfers
                 tx.block_time_unix = row.block_time_unix
+                tx.side = row.side  # 添加 side 字段
                 transactions.append(tx)
             
             return transactions
@@ -80,77 +82,27 @@ class HoldTimeCalculator:
     
     def extract_token_operations(self, transactions: List[BirdeyeWalletTransaction]) -> Dict[str, List[Dict]]:
         """
-        从交易记录中提取每个代币的操作记录
+        从交易记录中提取每个代币的操作记录（按 to 字段分组）
         :param transactions: 交易记录列表
-        :return: {token_address: [{'type': 'buy/sell', 'time': datetime, 'amount': float}]}
+        :return: {to_address: [{'type': 'buy/sell', 'time': datetime, 'tx_hash': str}]}
         """
         token_operations = defaultdict(list)
         
         for tx in transactions:
-            if not tx.block_time or not tx.status:
+            # 检查交易有效性
+            if not tx.block_time or not tx.status or not tx.to:
                 continue
             
-            # 解析 token_transfers
-            if tx.token_transfers:
-                try:
-                    transfers = json.loads(tx.token_transfers) if isinstance(tx.token_transfers, str) else tx.token_transfers
-                    
-                    if isinstance(transfers, list):
-                        for transfer in transfers:
-                            token = transfer.get('token') or transfer.get('tokenAddress') or transfer.get('mint')
-                            amount = transfer.get('amount', 0)
-                            from_addr = transfer.get('from') or transfer.get('fromAddress')
-                            to_addr = transfer.get('to') or transfer.get('toAddress')
-                            
-                            if not token:
-                                continue
-                            
-                            # 判断是买入还是卖出
-                            # 如果 to 是当前钱包地址，说明是买入
-                            # 如果 from 是当前钱包地址，说明是卖出
-                            operation_type = None
-                            if to_addr == tx.from_address:
-                                operation_type = 'buy'
-                            elif from_addr == tx.from_address:
-                                operation_type = 'sell'
-                            
-                            if operation_type:
-                                token_operations[token].append({
-                                    'type': operation_type,
-                                    'time': tx.block_time,
-                                    'amount': abs(float(amount)) if amount else 0,
-                                    'tx_hash': tx.tx_hash
-                                })
-                
-                except (json.JSONDecodeError, TypeError) as e:
-                    # 如果解析失败，尝试从 balance_change 中提取
-                    pass
+            # 使用 side 字段判断买卖方向
+            if not tx.side or tx.side not in ['buy', 'sell']:
+                continue
             
-            # 如果 token_transfers 没有数据，尝试从 balance_change 中提取
-            if tx.balance_change and not token_operations:
-                try:
-                    balance_changes = json.loads(tx.balance_change) if isinstance(tx.balance_change, str) else tx.balance_change
-                    
-                    if isinstance(balance_changes, list):
-                        for change in balance_changes:
-                            token = change.get('token') or change.get('tokenAddress') or change.get('mint')
-                            amount = change.get('amount', 0)
-                            
-                            if not token or token == 'SOL':  # 跳过 SOL（可能是手续费）
-                                continue
-                            
-                            # 根据金额正负判断买卖
-                            operation_type = 'buy' if float(amount) > 0 else 'sell'
-                            
-                            token_operations[token].append({
-                                'type': operation_type,
-                                'time': tx.block_time,
-                                'amount': abs(float(amount)),
-                                'tx_hash': tx.tx_hash
-                            })
-                
-                except (json.JSONDecodeError, TypeError) as e:
-                    pass
+            # 直接用 to 字段（代币合约地址）作为分组标识
+            token_operations[tx.to].append({
+                'type': tx.side,  # buy 或 sell
+                'time': tx.block_time,
+                'tx_hash': tx.tx_hash
+            })
         
         return dict(token_operations)
     
@@ -210,11 +162,11 @@ class HoldTimeCalculator:
         
         # 3. 计算每个代币的持仓时间
         hold_times = []
-        for token, operations in token_operations.items():
+        for to_address, operations in token_operations.items():
             hold_time = self.calculate_token_hold_time(operations)
             if hold_time:
                 hold_times.append(hold_time)
-                print(f"      代币 {token[:10]}... 持仓时间: {hold_time} 秒 ({hold_time/3600:.2f} 小时)")
+                print(f"      代币 {to_address[:16]}... 持仓时间: {hold_time} 秒 ({hold_time/3600:.2f} 小时)")
         
         # 4. 计算中位数
         if not hold_times:
@@ -332,29 +284,30 @@ def main():
     print("\n" + "=" * 70)
     
     with HoldTimeCalculator() as calculator:
-        if len(sys.argv) > 1:
-            command = sys.argv[1]
-            
-            if command == 'all':
-                # 更新所有钱包
-                print("\n开始更新所有钱包...")
-                calculator.update_all_wallets_hold_time(days=7)
-            
-            elif command == 'test':
-                # 测试模式，只处理前10个
-                print("\n测试模式：只处理前 10 个钱包...")
-                calculator.update_all_wallets_hold_time(days=7, limit=10)
-            
-            else:
-                # 更新单个钱包
-                address = command
-                calculator.update_single_wallet_hold_time(address, days=7)
-        
-        else:
-            # 默认测试模式
-            print("\n未指定参数，使用测试模式（处理前 10 个钱包）...")
-            print("使用 'python update_hold_time.py all' 更新所有钱包")
-            calculator.update_all_wallets_hold_time(days=7, limit=10)
+        calculator.update_all_wallets_hold_time(days=7)
+        # if len(sys.argv) > 1:
+        #     command = sys.argv[1]
+        #
+        #     if command == 'all':
+        #         # 更新所有钱包
+        #         print("\n开始更新所有钱包...")
+        #         calculator.update_all_wallets_hold_time(days=7)
+        #
+        #     elif command == 'test':
+        #         # 测试模式，只处理前10个
+        #         print("\n测试模式：只处理前 10 个钱包...")
+        #         calculator.update_all_wallets_hold_time(days=7, limit=10)
+        #
+        #     else:
+        #         # 更新单个钱包
+        #         address = command
+        #         calculator.update_single_wallet_hold_time(address, days=7)
+        #
+        # else:
+        #     # 默认测试模式
+        #     print("\n未指定参数，使用测试模式（处理前 10 个钱包）...")
+        #     print("使用 'python update_hold_time.py all' 更新所有钱包")
+        #     calculator.update_all_wallets_hold_time(days=7, limit=10)
 
 
 if __name__ == "__main__":
@@ -366,7 +319,7 @@ if __name__ == "__main__":
     print("\n按 Enter 继续，Ctrl+C 退出...")
     
     try:
-        input()
+        # input()
         main()
     except KeyboardInterrupt:
         print("\n\n已取消执行")
