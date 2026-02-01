@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "GMGN 聪明钱数据采集器",
+  "version": "1.0.0",
+  "description": "自动捕获 GMGN 聪明钱榜单数据，发送到本地数据库",
+  "permissions": [
+    "webRequest",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://gmgn.ai/*",
+    "http://localhost:*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>GMGN 数据采集器</title>
+  <style>
+    body {
+      width: 350px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+    }
+    h2 {
+      margin: 0 0 15px 0;
+      font-size: 18px;
+      color: #333;
+    }
+    .status {
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+    .status.active {
+      background: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #4caf50;
+    }
+    .status.inactive {
+      background: #ffebee;
+      color: #c62828;
+      border: 1px solid #f44336;
+    }
+    .info {
+      background: #f5f5f5;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-bottom: 15px;
+    }
+    .info-item {
+      display: flex;
+      justify-content: space-between;
+      margin: 8px 0;
+    }
+    .info-label {
+      color: #666;
+    }
+    .info-value {
+      font-weight: 600;
+      color: #333;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      margin-bottom: 10px;
+    }
+    button:hover {
+      background: #1976D2;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .instructions {
+      font-size: 12px;
+      color: #666;
+      line-height: 1.6;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #eee;
+    }
+    .instructions h3 {
+      margin: 0 0 10px 0;
+      font-size: 13px;
+      color: #333;
+    }
+    .instructions ol {
+      margin: 5px 0;
+      padding-left: 20px;
+    }
+    .instructions li {
+      margin: 5px 0;
+    }
+  </style>
+</head>
+<body>
+  <h2>🎯 GMGN 数据采集器</h2>
+  
+  <div id="status" class="status inactive">
+    ⚠️ 服务器未连接
+  </div>
+  
+  <div class="info">
+    <div class="info-item">
+      <span class="info-label">最后捕获:</span>
+      <span class="info-value" id="lastCapture">--</span>
+    </div>
+    <div class="info-item">
+      <span class="info-label">本地缓存:</span>
+      <span class="info-value" id="pendingCount">0 条</span>
+    </div>
+  </div>
+  
+  <button id="testServer">测试服务器连接</button>
+  <button id="openGmgn">打开 GMGN 网站</button>
+  <button id="clearCache">清除本地缓存</button>
+  
+  <div class="instructions">
+    <h3>📖 使用说明：</h3>
+    <ol>
+      <li>确保 Python 服务器正在运行（端口 8899）</li>
+      <li>点击"测试服务器连接"检查状态</li>
+      <li>访问 <a href="https://gmgn.ai" target="_blank">gmgn.ai</a></li>
+      <li>切换到"Smart Degen"标签</li>
+      <li>数据将自动捕获并发送到服务器</li>
+    </ol>
+    
+    <h3>💡 提示：</h3>
+    <ul style="list-style: none; padding: 0; margin: 5px 0;">
+      <li>✅ 绿色 = 服务器已连接</li>
+      <li>⚠️ 红色 = 服务器未连接（数据会保存到本地）</li>
+    </ul>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
