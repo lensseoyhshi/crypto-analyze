@@ -91,3 +91,13 @@ def get_db_session() -> Session:
         yield session
     finally:
         session.close()
+
+
+def get_session() -> Session:
+    """
+    获取数据库 Session（直接返回，不使用上下文管理器）
+    用于需要手动管理 session 生命周期的场景
+    
+    注意：使用完毕后需要手动调用 session.close()
+    """
+    return db_config.get_session()

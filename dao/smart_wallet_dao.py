@@ -27,10 +27,19 @@ class SmartWalletDAO:
         Returns:
             SmartWallet 对象
         """
+        address = wallet_data.get('address')
+        if not address:
+            raise ValueError("address 字段不能为空")
+        
+        # 1. 先查询是否存在
+        existing_wallet = self.session.query(SmartWallet).filter(
+            SmartWallet.address == address
+        ).first()
+        
         # 准备数据
         data = {
-            'address': wallet_data.get('address'),
-            'wallet_address': wallet_data.get('wallet_address', wallet_data.get('address')),
+            'address': address,
+            'wallet_address': wallet_data.get('wallet_address', address),
             'name': wallet_data.get('name'),
             'last_active': wallet_data.get('last_active', 0),
             'chain': wallet_data.get('chain', 'SOL'),
@@ -104,19 +113,19 @@ class SmartWalletDAO:
             'remark_count': wallet_data.get('remark_count', 0)
         }
         
-        # 使用 MySQL 的 INSERT ... ON DUPLICATE KEY UPDATE
-        stmt = insert(SmartWallet).values(**data)
-        
-        # 更新时排除主键和唯一键
-        update_dict = {k: v for k, v in data.items() if k not in ['id', 'address']}
-        stmt = stmt.on_duplicate_key_update(**update_dict)
-        
-        self.session.execute(stmt)
-        
-        # 查询返回
-        return self.session.query(SmartWallet).filter(
-            SmartWallet.address == data['address']
-        ).first()
+        if existing_wallet:
+            # 2. 如果存在，则更新
+            for key, value in data.items():
+                if key != 'address':  # address 不能更新
+                    setattr(existing_wallet, key, value)
+            self.session.flush()
+            return existing_wallet
+        else:
+            # 3. 如果不存在，则插入
+            new_wallet = SmartWallet(**data)
+            self.session.add(new_wallet)
+            self.session.flush()
+            return new_wallet
     
     def batch_upsert(self, wallets: List[Dict[str, Any]]) -> int:
         """批量插入或更新钱包"""
