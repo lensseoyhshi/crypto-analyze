@@ -93,7 +93,7 @@ def process_wallets(wallets):
     for index, wallet in enumerate(wallets[:5], 1):
         address = wallet.get('address') or wallet.get('wallet_address')
         pnl_7d = wallet.get('pnl_7d') or wallet.get('profit_7d') or 0
-        win_rate = wallet.get('win_rate_7d') or wallet.get('winrate') or 0
+        win_rate = wallet.get('winrate_7d') or wallet.get('winrate') or 0
         tags = wallet.get('tags', [])
         
         # 转换为数字类型
@@ -183,45 +183,45 @@ def process_wallets(wallets):
                 # 1天数据
                 'pnl_1d': safe_float(wallet.get('pnl_1d', 0)),
                 'pnl_1d_roi': safe_float(wallet.get('pnl_1d_roi', 0)),
-                'win_rate_1d': safe_float(wallet.get('win_rate_1d', 0)) * 100,
-                'tx_count_1d': safe_int(wallet.get('tx_count_1d', 0)),
+                'win_rate_1d': safe_float(wallet.get('winrate_1d', 0)) * 100,
+                'tx_count_1d': safe_int(wallet.get('txs_1d', 0)),
                 'buy_count_1d': safe_int(wallet.get('buy_1d', 0)),
                 'sell_count_1d': safe_int(wallet.get('sell_1d', 0)),
                 'volume_1d': safe_float(wallet.get('volume_1d', 0)),
                 'net_inflow_1d': safe_float(wallet.get('net_inflow_1d', 0)),
-                'avg_hold_time_1d': safe_int(wallet.get('avg_hold_time_1d', 0)),
+                'avg_hold_time_1d': safe_int(wallet.get('avg_holding_period_1d', 0)),
                 
                 # 7天数据（主要数据）
                 'pnl_7d': safe_float(wallet.get('pnl_7d', 0)),
                 'pnl_7d_roi': safe_float(wallet.get('pnl_7d_roi', 0)),
-                'win_rate_7d': safe_float(wallet.get('win_rate_7d', 0)) * 100,  # 转换为百分比
+                'win_rate_7d': safe_float(wallet.get('winrate_7d', 0)) * 100,  # 转换为百分比
                 'pnl_lt_minus_dot5_num_7d': safe_int(wallet.get('pnl_lt_minus_dot5_num_7d', 0)),
                 'pnl_minus_dot5_0x_num_7d': safe_int(wallet.get('pnl_minus_dot5_0x_num_7d', 0)),
                 'pnl_lt_2x_num_7d': safe_int(wallet.get('pnl_lt_2x_num_7d', 0)),
                 'pnl_2x_5x_num_7d': safe_int(wallet.get('pnl_2x_5x_num_7d', 0)),
                 'pnl_gt_5x_num_7d': safe_int(wallet.get('pnl_gt_5x_num_7d', 0)),
-                'tx_count_7d': safe_int(wallet.get('buy_7d', 0)) + safe_int(wallet.get('sell_7d', 0)),
+                'tx_count_7d': safe_int(wallet.get('txs_7d', 0)),
                 'buy_count_7d': safe_int(wallet.get('buy_7d', 0)),
                 'sell_count_7d': safe_int(wallet.get('sell_7d', 0)),
                 'volume_7d': safe_float(wallet.get('volume_7d', 0)),
                 'net_inflow_7d': safe_float(wallet.get('net_inflow_7d', 0)),
-                'avg_hold_time_7d': safe_int(wallet.get('avg_hold_time_7d', 0)),
+                'avg_hold_time_7d': safe_int(wallet.get('avg_holding_period_7d', 0)),
                 
                 # 30天数据
                 'pnl_30d': safe_float(wallet.get('pnl_30d', 0)),
                 'realized_profit_30d': safe_float(wallet.get('realized_profit_30d', 0)),
                 'pnl_30d_roi': safe_float(wallet.get('pnl_30d_roi', 0)),
-                'win_rate_30d': safe_float(wallet.get('win_rate_30d', 0)) * 100,
-                'tx_count_30d': safe_int(wallet.get('tx_count_30d', 0)),
+                'win_rate_30d': safe_float(wallet.get('winrate_30d', 0)) * 100,
+                'tx_count_30d': safe_int(wallet.get('txs_30d', 0)),
                 'buy_count_30d': safe_int(wallet.get('buy_30d', 0)),
                 'sell_count_30d': safe_int(wallet.get('sell_30d', 0)),
-                'tx_count_total': safe_int(wallet.get('total_tx_count', 0)),
+                'tx_count_total': safe_int(wallet.get('txs', 0)),
                 'volume_30d': safe_float(wallet.get('volume_30d', 0)),
                 'net_inflow_30d': safe_float(wallet.get('net_inflow_30d', 0)),
-                'avg_hold_time_30d': safe_int(wallet.get('avg_hold_time_30d', 0)),
+                'avg_hold_time_30d': safe_int(wallet.get('avg_holding_period_30d', 0)),
                 
                 # 社交指标
-                'followed_count': safe_int(wallet.get('followed_count', 0)),
+                'followed_count': safe_int(wallet.get('follow_count', 0)),
                 'remark_count': safe_int(wallet.get('remark_count', 0)),
             }
             
