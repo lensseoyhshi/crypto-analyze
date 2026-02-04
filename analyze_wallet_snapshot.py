@@ -12,13 +12,21 @@ import numpy as np
 import os
 
 
-def get_recent_snapshots(days=3):
-    """获取最近N天的快照数据"""
+def get_recent_snapshots(days=3, start_date_str=None):
+    """获取最近N天的快照数据，或指定起始日期到今日的数据
+    
+    Args:
+        days: 最近N天的数据（如果不指定start_date_str）
+        start_date_str: 起始日期字符串，格式'YYYY-MM-DD'（如果指定则忽略days参数）
+    """
     session = get_session()
     
     # 计算日期范围
     end_date = date.today()
-    start_date = end_date - timedelta(days=days-1)
+    if start_date_str:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+    else:
+        start_date = end_date - timedelta(days=days-1)
     
     print(f"📅 查询日期范围: {start_date} 到 {end_date}")
     
@@ -96,7 +104,7 @@ def get_recent_snapshots(days=3):
 def analyze_daily_changes(df):
     """分析每日变化"""
     print("\n" + "=" * 80)
-    print("📊 1. 近3天钱包指标变动性分析")
+    print("📊 1. 近期钱包指标变动性分析")
     print("=" * 80)
     
     if df.empty:
@@ -547,8 +555,8 @@ def main():
     print("🚀 智能钱包快照数据分析系统")
     print("=" * 80)
     
-    # 获取数据
-    df = get_recent_snapshots(days=3)
+    # 获取数据 - 从2026-02-03到今日
+    df = get_recent_snapshots(start_date_str='2026-02-03')
     
     if df.empty:
         print("\n❌ 没有数据，请先运行数据采集系统")

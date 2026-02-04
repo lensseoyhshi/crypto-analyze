@@ -225,21 +225,53 @@ def process_wallets(wallets):
                 'remark_count': safe_int(wallet.get('remark_count', 0)),
             }
             
-            try:
-                # 1. 写入实时表（smart_wallets）- 存在则更新，不存在则插入
-                wallet_dao.upsert_wallet(wallet_data)
-                wallet_upsert_count += 1
-                
-                # 2. 写入快照表（smart_wallets_snapshot）- 存在则跳过，不存在则插入
-                result = snapshot_dao.upsert_snapshot(wallet_data, snapshot_date)
-                if result is not None:
-                    snapshot_insert_count += 1
-                else:
-                    snapshot_skip_count += 1
-                
-            except Exception as e:
-                print(f"⚠️  插入钱包 {address[:8]}... 失败: {e}")
-                continue
+            # 使用重试机制处理死锁
+            max_retries = 3
+            retry_count = 0
+            success = False
+            
+            while retry_count < max_retries and not success:
+                try:
+                    # 1. 写入实时表（smart_wallets）- 存在则更新，不存在则插入
+                    wallet_dao.upsert_wallet(wallet_data)
+                    wallet_upsert_count += 1
+                    
+                    # 2. 写入快照表（smart_wallets_snapshot）- 存在则跳过，不存在则插入
+                    result = snapshot_dao.upsert_snapshot(wallet_data, snapshot_date)
+                    if result is not None:
+                        snapshot_insert_count += 1
+                    else:
+                        snapshot_skip_count += 1
+                    
+                    success = True
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    # 检查是否是死锁错误
+                    if 'Deadlock' in error_msg or '1213' in error_msg:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            print(f"⚠️  钱包 {address[:8]}... 遇到死锁，第 {retry_count} 次重试...")
+                            # 回滚当前事务，清理session状态
+                            session.rollback()
+                            import time
+                            time.sleep(0.1 * retry_count)  # 指数退避
+                        else:
+                            print(f"❌ 钱包 {address[:8]}... 重试 {max_retries} 次后仍失败: {e}")
+                    
+                    # 检查是否是Session状态错误
+                    elif 'rolled back' in error_msg or 'previous exception' in error_msg:
+                        print(f"⚠️  钱包 {address[:8]}... Session状态异常，回滚后重试...")
+                        session.rollback()
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            print(f"❌ 钱包 {address[:8]}... 重试 {max_retries} 次后仍失败: {e}")
+                    
+                    else:
+                        # 其他错误，不重试
+                        print(f"⚠️  插入钱包 {address[:8]}... 失败: {e}")
+                        break
         
         session.commit()
         print(f"\n✅ 实时表 (smart_wallets): 成功处理 {wallet_upsert_count}/{len(wallets)} 个钱包（存在则更新，不存在则插入）")
@@ -248,13 +280,19 @@ def process_wallets(wallets):
         
     except Exception as e:
         if session:
-            session.rollback()
+            try:
+                session.rollback()
+            except Exception as rollback_error:
+                print(f"⚠️  Rollback失败: {rollback_error}")
         print(f"\n❌ 数据库操作失败: {e}")
         import traceback
         traceback.print_exc()
     finally:
         if session:
-            session.close()
+            try:
+                session.close()
+            except Exception as close_error:
+                print(f"⚠️  关闭Session失败: {close_error}")
     
     print("-" * 70)
 
