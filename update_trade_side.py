@@ -121,7 +121,6 @@ def update_trade_sides(batch_size: int = 1000, limit: Optional[int] = None, dry_
                 select(BirdeyeWalletTransaction)
                 .where(
                     and_(
-                        BirdeyeWalletTransaction.to != '11111111111111111111111111111111',
                         or_(
                             BirdeyeWalletTransaction.main_action == 'swap',
                             BirdeyeWalletTransaction.main_action == 'unknown'

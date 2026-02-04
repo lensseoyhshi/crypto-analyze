@@ -110,12 +110,9 @@ def analyze_transactions(limit: int = 100, offset: int = 0, show_detail: bool = 
         stmt = (
             select(BirdeyeWalletTransaction)
             .where(
-                and_(
-                    BirdeyeWalletTransaction.to != '11111111111111111111111111111111',
-                    or_(
-                        BirdeyeWalletTransaction.main_action == 'swap',
-                        BirdeyeWalletTransaction.main_action == 'unknown'
-                    )
+                or_(
+                    BirdeyeWalletTransaction.main_action == 'swap',
+                    BirdeyeWalletTransaction.main_action == 'unknown'
                 )
             )
             .limit(limit)

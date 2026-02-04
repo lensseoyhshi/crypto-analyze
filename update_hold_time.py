@@ -44,7 +44,6 @@ class HoldTimeCalculator:
             sql = text("""
                 SELECT * FROM birdeye_wallet_transactions 
                 WHERE `from` = :address 
-                AND `to` != '11111111111111111111111111111111'
                 AND main_action IN ('swap', 'unknown')
                 AND block_time >= :cutoff_time
                 ORDER BY block_time ASC
