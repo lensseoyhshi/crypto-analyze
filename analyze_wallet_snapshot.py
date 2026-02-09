@@ -4,9 +4,10 @@
 
 1. 查询非高频钱包（is_high_frequency=0）及关联快照数据
 2. 分析每天钱包的流动性
-3. 分析不同渠道（Trojan/BullX/Photon/Axiom）的收益、交易频次、持仓时长
-4. 计算钱包从第一次买入到不同时间窗口的持仓收益率
-5. 输出 Excel 报表
+3. 各平台下钱包稳定性分析（1D/7D/30D 变动性），识别稳定钱包
+4. 分析不同渠道（Trojan/BullX/Photon/Axiom）的收益、交易频次、持仓时长（分位数汇总）
+5. 计算每个钱包每个币种的收益率
+6. 输出 Excel 报表
 """
 
 import pandas as pd
@@ -36,6 +37,7 @@ def get_non_hf_wallets():
             SELECT address, name,
                    uses_trojan, uses_bullx, uses_photon, uses_axiom, uses_bot,
                    is_smart_money, is_kol, is_whale, is_sniper,
+                   is_hot_followed, is_hot_remarked,
                    pnl_1d, pnl_7d, pnl_30d,
                    win_rate_1d, win_rate_7d, win_rate_30d,
                    tx_count_1d, tx_count_7d, tx_count_30d,
@@ -60,7 +62,8 @@ def get_non_hf_wallets():
         int_cols = ['tx_count_1d', 'tx_count_7d', 'tx_count_30d',
                     'avg_hold_time_1d', 'avg_hold_time_7d', 'avg_hold_time_30d',
                     'uses_trojan', 'uses_bullx', 'uses_photon', 'uses_axiom', 'uses_bot',
-                    'is_smart_money', 'is_kol', 'is_whale', 'is_sniper']
+                    'is_smart_money', 'is_kol', 'is_whale', 'is_sniper',
+                    'is_hot_followed', 'is_hot_remarked']
         for col in int_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
@@ -76,6 +79,7 @@ def get_non_hf_wallets():
                 SELECT address, name,
                        uses_trojan, uses_bullx, uses_photon, uses_axiom, uses_bot,
                        is_smart_money, is_kol, is_whale, is_sniper,
+                       is_hot_followed, is_hot_remarked,
                        pnl_1d, pnl_7d, pnl_30d,
                        win_rate_1d, win_rate_7d, win_rate_30d,
                        tx_count_1d, tx_count_7d, tx_count_30d,
@@ -130,6 +134,7 @@ def get_snapshot_data(addresses):
                        avg_hold_time_30d, win_rate_30d
                 FROM smart_wallets_snapshot
                 WHERE address IN ({in_clause})
+                  AND snapshot_date >= '2026-02-03'
                 ORDER BY snapshot_date ASC
             """)
             result = session.execute(sql, params)
@@ -224,6 +229,139 @@ def analyze_daily_liquidity(snapshot_df):
 
 
 # ============================================================
+# 2.5 钱包稳定性分析
+# ============================================================
+
+def analyze_wallet_stability(snapshot_df, wallets_df):
+    """
+    分析各平台下钱包在 1D/7D/30D 维度的稳定性
+
+    稳定性指标：
+      - 出现率：钱包在所有快照日期中出现的比例
+      - 变异系数(CV = std/mean)：指标波动程度，越小越稳定
+
+    稳定钱包标准：
+      - 出现率 >= 80%
+      - 1D/7D/30D 胜率的变异系数均 < 30%
+
+    返回:
+      - stability_df: 所有钱包的稳定性分析明细
+      - stable_df: 筛选出的稳定钱包清单
+    """
+    if snapshot_df.empty:
+        print("  无快照数据")
+        return None, None
+
+    platforms = {
+        'Trojan': 'uses_trojan',
+        'BullX': 'uses_bullx',
+        'Photon': 'uses_photon',
+        'Axiom': 'uses_axiom',
+    }
+
+    total_dates = snapshot_df['snapshot_date'].nunique()
+    print(f"  总快照天数: {total_dates}")
+
+    dimensions = {
+        '1D': {'pnl': 'pnl_1d', 'win_rate': 'win_rate_1d', 'tx_count': 'tx_count_1d'},
+        '7D': {'pnl': 'pnl_7d', 'win_rate': 'win_rate_7d', 'tx_count': 'tx_count_7d'},
+        '30D': {'pnl': 'pnl_30d', 'win_rate': 'win_rate_30d', 'tx_count': 'tx_count_30d'},
+    }
+
+    all_rows = []
+    stable_rows = []
+
+    for pname, pcol in platforms.items():
+        platform_addrs = wallets_df[wallets_df[pcol] == 1]['address'].unique()
+        pdata = snapshot_df[snapshot_df['address'].isin(platform_addrs)]
+
+        if pdata.empty:
+            print(f"    {pname}: 无快照数据")
+            continue
+
+        stable_count = 0
+        for addr in platform_addrs:
+            wdata = pdata[pdata['address'] == addr]
+            if wdata.empty:
+                continue
+
+            appear_count = wdata['snapshot_date'].nunique()
+            appear_rate = appear_count / total_dates * 100
+
+            name_row = wallets_df[wallets_df['address'] == addr]
+            wallet_name = ''
+            if not name_row.empty and pd.notna(name_row.iloc[0]['name']):
+                wallet_name = name_row.iloc[0]['name']
+
+            row = {
+                '平台': pname,
+                '钱包地址': addr,
+                '钱包名称': wallet_name,
+                '快照出现次数': appear_count,
+                '总快照天数': total_dates,
+                '出现率(%)': round(appear_rate, 1),
+            }
+
+            is_stable = appear_rate >= 80
+
+            for dim, cols in dimensions.items():
+                for metric_label, col_name in cols.items():
+                    series = wdata[col_name]
+                    mean_val = series.mean()
+                    std_val = series.std() if len(series) > 1 else 0
+
+                    if abs(mean_val) > 1e-9:
+                        cv = abs(std_val / mean_val) * 100
+                    else:
+                        cv = 0.0 if abs(std_val) < 1e-9 else 999.9
+
+                    row[f'{dim}_{metric_label}_均值'] = round(mean_val, 2)
+                    row[f'{dim}_{metric_label}_标准差'] = round(std_val, 2)
+                    row[f'{dim}_{metric_label}_CV(%)'] = round(cv, 1)
+
+                # 胜率稳定性检查
+                wr_cv = row[f'{dim}_win_rate_CV(%)']
+                if wr_cv > 30:
+                    is_stable = False
+
+            row['是否稳定'] = '是' if is_stable else '否'
+            all_rows.append(row)
+
+            if is_stable:
+                stable_count += 1
+                stable_rows.append({
+                    '平台': pname,
+                    '钱包地址': addr,
+                    '钱包名称': wallet_name,
+                    '出现率(%)': round(appear_rate, 1),
+                    '1D_PnL均值': round(wdata['pnl_1d'].mean(), 2),
+                    '7D_PnL均值': round(wdata['pnl_7d'].mean(), 2),
+                    '30D_PnL均值': round(wdata['pnl_30d'].mean(), 2),
+                    '1D_胜率均值(%)': round(wdata['win_rate_1d'].mean(), 2),
+                    '7D_胜率均值(%)': round(wdata['win_rate_7d'].mean(), 2),
+                    '30D_胜率均值(%)': round(wdata['win_rate_30d'].mean(), 2),
+                    '1D_胜率CV(%)': row['1D_win_rate_CV(%)'],
+                    '7D_胜率CV(%)': row['7D_win_rate_CV(%)'],
+                    '30D_胜率CV(%)': row['30D_win_rate_CV(%)'],
+                    '1D_交易次数均值': round(wdata['tx_count_1d'].mean(), 1),
+                    '7D_交易次数均值': round(wdata['tx_count_7d'].mean(), 1),
+                    '30D_交易次数均值': round(wdata['tx_count_30d'].mean(), 1),
+                })
+
+        print(f"    {pname}: {len(platform_addrs)} 个钱包，{stable_count} 个稳定")
+
+    stability_df = pd.DataFrame(all_rows) if all_rows else None
+    stable_df = pd.DataFrame(stable_rows) if stable_rows else None
+
+    if stable_df is not None:
+        print(f"  共 {len(stable_df)} 个稳定钱包")
+    else:
+        print("  未找到稳定钱包")
+
+    return stability_df, stable_df
+
+
+# ============================================================
 # 3. 分析不同渠道平台
 # ============================================================
 
@@ -266,21 +404,36 @@ def analyze_by_platform(snapshot_df):
         for dim, sfx in [('1D', '_1d'), ('7D', '_7d'), ('30D', '_30d')]:
             profit_n = len(pdata[pdata[f'pnl{sfx}'] > 0])
             loss_n = len(pdata[pdata[f'pnl{sfx}'] < 0])
-            hold_mean = pdata[f'avg_hold_time{sfx}'].mean()
 
             summary_rows.append({
                 '平台': pname,
                 '时间维度': dim,
                 '钱包数': n,
-                '平均PnL(USD)': round(pdata[f'pnl{sfx}'].mean(), 2),
-                '中位PnL(USD)': round(pdata[f'pnl{sfx}'].median(), 2),
+                # PnL 分位数
+                'PnL_P10': round(pdata[f'pnl{sfx}'].quantile(0.10), 2),
+                'PnL_P25': round(pdata[f'pnl{sfx}'].quantile(0.25), 2),
+                'PnL_P50(中位数)': round(pdata[f'pnl{sfx}'].median(), 2),
+                'PnL_P75': round(pdata[f'pnl{sfx}'].quantile(0.75), 2),
+                'PnL_P90': round(pdata[f'pnl{sfx}'].quantile(0.90), 2),
                 '总PnL(USD)': round(pdata[f'pnl{sfx}'].sum(), 2),
-                '平均胜率(%)': round(pdata[f'win_rate{sfx}'].mean(), 2),
-                '平均交易次数': round(pdata[f'tx_count{sfx}'].mean(), 1),
-                '平均买入次数': round(pdata[f'buy_count{sfx}'].mean(), 1),
-                '平均卖出次数': round(pdata[f'sell_count{sfx}'].mean(), 1),
-                '平均持仓时长(小时)': round(hold_mean / 3600, 2) if hold_mean > 0 else 0,
-                '平均交易量(USD)': round(pdata[f'volume{sfx}'].mean(), 2),
+                # 胜率 分位数
+                '胜率_P25(%)': round(pdata[f'win_rate{sfx}'].quantile(0.25), 2),
+                '胜率_P50(%)': round(pdata[f'win_rate{sfx}'].median(), 2),
+                '胜率_P75(%)': round(pdata[f'win_rate{sfx}'].quantile(0.75), 2),
+                # 交易次数 分位数
+                '交易次数_P25': round(pdata[f'tx_count{sfx}'].quantile(0.25), 1),
+                '交易次数_P50': round(pdata[f'tx_count{sfx}'].median(), 1),
+                '交易次数_P75': round(pdata[f'tx_count{sfx}'].quantile(0.75), 1),
+                # 买卖次数 中位数
+                '买入次数_P50': round(pdata[f'buy_count{sfx}'].median(), 1),
+                '卖出次数_P50': round(pdata[f'sell_count{sfx}'].median(), 1),
+                # 持仓时长 分位数
+                '持仓时长_P50(小时)': round(pdata[f'avg_hold_time{sfx}'].median() / 3600, 2) if pdata[f'avg_hold_time{sfx}'].median() > 0 else 0,
+                # 交易量 分位数
+                '交易量_P25(USD)': round(pdata[f'volume{sfx}'].quantile(0.25), 2),
+                '交易量_P50(USD)': round(pdata[f'volume{sfx}'].median(), 2),
+                '交易量_P75(USD)': round(pdata[f'volume{sfx}'].quantile(0.75), 2),
+                # 盈亏钱包分布
                 '盈利钱包数': profit_n,
                 '亏损钱包数': loss_n,
                 '盈利占比(%)': round(profit_n / n * 100, 1),
@@ -440,19 +593,20 @@ def get_wallet_transactions(addresses, batch_size=50):
 
 def analyze_token_returns(addresses, wallets_df=None):
     """
-    计算钱包从第一次买入到不同时间窗口的持仓收益率
+    计算每个钱包每个币种的收益率
 
     返回:
       - detail_df: 每个钱包-代币的收益率明细
-      - summary_df: 按时间窗口汇总的收益率统计
-      - platform_df: 按平台分组的收益率统计
+      - wallet_summary_df: 每个钱包的收益汇总（所有币种聚合）
+      - summary_df: 按时间窗口汇总的收益率统计（分位数）
+      - platform_df: 按平台分组的收益率统计（分位数）
     """
     print(f"  查询 {len(addresses)} 个钱包的交易记录...")
     trades = get_wallet_transactions(addresses)
 
     if not trades:
         print("  无交易数据")
-        return None, None, None
+        return None, None, None, None
 
     trades_df = pd.DataFrame(trades)
     trades_df['block_time'] = pd.to_datetime(trades_df['block_time'])
@@ -530,12 +684,56 @@ def analyze_token_returns(addresses, wallets_df=None):
 
     if not results:
         print("  无有效收益率数据")
-        return None, None, None
+        return None, None, None, None
 
     detail_df = pd.DataFrame(results)
     print(f"  生成 {len(detail_df)} 条持仓收益率记录")
 
-    # ---- 按时间窗口汇总 ----
+    # ---- 钱包收益汇总（每个钱包所有币种聚合）----
+    wallet_summary_rows = []
+    for addr, wgroup in detail_df.groupby('钱包地址'):
+        total_cost = wgroup['买入总成本'].sum()
+        total_rev = wgroup['卖出总收入'].sum()
+        total_pnl = total_rev - total_cost
+        total_return = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+
+        profitable_tokens = len(wgroup[wgroup['总收益率(%)'] > 0])
+        losing_tokens = len(wgroup[wgroup['总收益率(%)'] < 0])
+        n_tokens = len(wgroup)
+
+        wallet_summary_rows.append({
+            '钱包地址': addr,
+            '交易币种数': n_tokens,
+            '总买入成本(SOL)': round(total_cost, 6),
+            '总卖出收入(SOL)': round(total_rev, 6),
+            '总盈亏(SOL)': round(total_pnl, 6),
+            '总收益率(%)': round(total_return, 2),
+            '盈利币种数': profitable_tokens,
+            '亏损币种数': losing_tokens,
+            '盈利币种占比(%)': round(profitable_tokens / n_tokens * 100, 1) if n_tokens > 0 else 0,
+            '最佳币种收益率(%)': round(wgroup['总收益率(%)'].max(), 2),
+            '最差币种收益率(%)': round(wgroup['总收益率(%)'].min(), 2),
+        })
+
+    wallet_summary_df = pd.DataFrame(wallet_summary_rows)
+
+    # 合并钱包名称
+    if wallets_df is not None and not wallets_df.empty:
+        name_map = wallets_df[['address', 'name']].drop_duplicates()
+        wallet_summary_df = wallet_summary_df.merge(
+            name_map, left_on='钱包地址', right_on='address', how='left'
+        )
+        wallet_summary_df.rename(columns={'name': '钱包名称'}, inplace=True)
+        wallet_summary_df.drop(columns=['address'], inplace=True, errors='ignore')
+        cols = ['钱包地址', '钱包名称'] + [c for c in wallet_summary_df.columns
+                                            if c not in ['钱包地址', '钱包名称']]
+        wallet_summary_df = wallet_summary_df[cols]
+
+    # 按总收益率降序排列
+    wallet_summary_df = wallet_summary_df.sort_values('总收益率(%)', ascending=False)
+    print(f"  生成 {len(wallet_summary_df)} 个钱包的收益汇总")
+
+    # ---- 按时间窗口汇总（分位数）----
     summary_rows = []
 
     # 总体
@@ -545,12 +743,14 @@ def analyze_token_returns(addresses, wallets_df=None):
     summary_rows.append({
         '时间窗口': '总计(所有时间)',
         '样本数': n,
-        '平均收益率(%)': round(detail_df[col_total].mean(), 2),
-        '中位收益率(%)': round(detail_df[col_total].median(), 2),
+        '收益率_P10(%)': round(detail_df[col_total].quantile(0.10), 2),
+        '收益率_P25(%)': round(detail_df[col_total].quantile(0.25), 2),
+        '收益率_P50(中位数)(%)': round(detail_df[col_total].median(), 2),
+        '收益率_P75(%)': round(detail_df[col_total].quantile(0.75), 2),
+        '收益率_P90(%)': round(detail_df[col_total].quantile(0.90), 2),
         '盈利比例(%)': round(len(prof_total) / n * 100, 1) if n > 0 else 0,
         '最大收益率(%)': round(detail_df[col_total].max(), 2),
         '最小收益率(%)': round(detail_df[col_total].min(), 2),
-        '标准差': round(detail_df[col_total].std(), 2),
     })
 
     for wname, _ in time_windows:
@@ -562,29 +762,33 @@ def analyze_token_returns(addresses, wallets_df=None):
             summary_rows.append({
                 '时间窗口': wname,
                 '样本数': 0,
-                '平均收益率(%)': 0,
-                '中位收益率(%)': 0,
+                '收益率_P10(%)': 0,
+                '收益率_P25(%)': 0,
+                '收益率_P50(中位数)(%)': 0,
+                '收益率_P75(%)': 0,
+                '收益率_P90(%)': 0,
                 '盈利比例(%)': 0,
                 '最大收益率(%)': 0,
                 '最小收益率(%)': 0,
-                '标准差': 0,
             })
         else:
             prof = valid[valid[col] > 0]
             summary_rows.append({
                 '时间窗口': wname,
                 '样本数': len(valid),
-                '平均收益率(%)': round(valid[col].mean(), 2),
-                '中位收益率(%)': round(valid[col].median(), 2),
+                '收益率_P10(%)': round(valid[col].quantile(0.10), 2),
+                '收益率_P25(%)': round(valid[col].quantile(0.25), 2),
+                '收益率_P50(中位数)(%)': round(valid[col].median(), 2),
+                '收益率_P75(%)': round(valid[col].quantile(0.75), 2),
+                '收益率_P90(%)': round(valid[col].quantile(0.90), 2),
                 '盈利比例(%)': round(len(prof) / len(valid) * 100, 1),
                 '最大收益率(%)': round(valid[col].max(), 2),
                 '最小收益率(%)': round(valid[col].min(), 2),
-                '标准差': round(valid[col].std(), 2),
             })
 
     summary_df = pd.DataFrame(summary_rows)
 
-    # ---- 按平台分组的收益率 ----
+    # ---- 按平台分组的收益率（分位数）----
     platform_df = None
     if wallets_df is not None and not wallets_df.empty:
         platforms = {
@@ -613,25 +817,34 @@ def analyze_token_returns(addresses, wallets_df=None):
             prow = {
                 '平台': pname,
                 '交易对数': n_p,
-                '平均总收益率(%)': round(pdata['总收益率(%)'].mean(), 2),
-                '中位总收益率(%)': round(pdata['总收益率(%)'].median(), 2),
+                # 总收益率 分位数
+                '总收益率_P10(%)': round(pdata['总收益率(%)'].quantile(0.10), 2),
+                '总收益率_P25(%)': round(pdata['总收益率(%)'].quantile(0.25), 2),
+                '总收益率_P50(%)': round(pdata['总收益率(%)'].median(), 2),
+                '总收益率_P75(%)': round(pdata['总收益率(%)'].quantile(0.75), 2),
+                '总收益率_P90(%)': round(pdata['总收益率(%)'].quantile(0.90), 2),
                 '盈利比例(%)': round(len(prof_p) / n_p * 100, 1),
             }
 
-            # 各时间窗口平均收益率
+            # 各时间窗口分位数
             for wname, _ in time_windows:
                 col = f'{wname}_收益率(%)'
                 valid = pdata[pdata[col] != 0]
-                prow[f'{wname}_平均收益率(%)'] = (
-                    round(valid[col].mean(), 2) if not valid.empty else 0
-                )
+                if not valid.empty:
+                    prow[f'{wname}_P25(%)'] = round(valid[col].quantile(0.25), 2)
+                    prow[f'{wname}_P50(%)'] = round(valid[col].median(), 2)
+                    prow[f'{wname}_P75(%)'] = round(valid[col].quantile(0.75), 2)
+                else:
+                    prow[f'{wname}_P25(%)'] = 0
+                    prow[f'{wname}_P50(%)'] = 0
+                    prow[f'{wname}_P75(%)'] = 0
 
             plat_rows.append(prow)
 
         if plat_rows:
             platform_df = pd.DataFrame(plat_rows)
 
-    return detail_df, summary_df, platform_df
+    return detail_df, wallet_summary_df, summary_df, platform_df
 
 
 # ============================================================
@@ -665,19 +878,28 @@ def save_to_excel(all_results, filename=None):
         # 每日流动性
         write_sheet(all_results.get('daily_liquidity'), '每日流动性')
 
-        # 平台分析（汇总 + 各平台趋势）
+        # 钱包稳定性分析
+        write_sheet(all_results.get('wallet_stability'), '钱包稳定性分析')
+
+        # 稳定钱包清单
+        write_sheet(all_results.get('stable_wallets'), '稳定钱包清单')
+
+        # 平台分析（分位数汇总 + 各平台趋势）
         platform_results = all_results.get('platform', {})
         for name, df in platform_results.items():
             write_sheet(df, name)
 
-        # 持仓收益率汇总
+        # 钱包收益汇总（每个钱包的聚合收益）
+        write_sheet(all_results.get('wallet_returns_summary'), '钱包收益汇总')
+
+        # 持仓收益率汇总（按时间窗口，分位数）
         write_sheet(all_results.get('token_returns_summary'), '持仓收益率汇总')
 
-        # 平台持仓收益率
+        # 平台持仓收益率（分位数）
         write_sheet(all_results.get('platform_returns'), '平台持仓收益率')
 
-        # 持仓收益率明细（放最后，数据量可能很大）
-        write_sheet(all_results.get('token_returns_detail'), '持仓收益率明细')
+        # 钱包币种收益明细（放最后，数据量可能很大）
+        write_sheet(all_results.get('token_returns_detail'), '钱包币种收益明细')
 
     print(f"\n文件已保存: {os.path.abspath(filename)}")
     print(f"共 {sheet_count} 个工作表")
@@ -694,7 +916,7 @@ def main():
     print("=" * 60)
 
     # 1. 查询非高频钱包
-    print("\n[1/4] 查询非高频钱包...")
+    print("\n[1/5] 查询非高频钱包...")
     wallets_df = get_non_hf_wallets()
 
     if wallets_df.empty:
@@ -712,23 +934,30 @@ def main():
     }
 
     # 2. 每天钱包流动性
-    print("\n[2/4] 分析每天钱包流动性...")
+    print("\n[2/5] 分析每天钱包流动性...")
     all_results['daily_liquidity'] = analyze_daily_liquidity(snapshot_df)
 
-    # 3. 不同渠道平台分析
-    print("\n[3/4] 分析不同渠道平台...")
+    # 3. 钱包稳定性分析
+    print("\n[3/5] 分析钱包稳定性（1D/7D/30D 变动性）...")
+    stability_df, stable_df = analyze_wallet_stability(snapshot_df, wallets_df)
+    all_results['wallet_stability'] = stability_df
+    all_results['stable_wallets'] = stable_df
+
+    # 4. 不同渠道平台分析（分位数汇总）
+    print("\n[4/5] 分析不同渠道平台（分位数）...")
     all_results['platform'] = analyze_by_platform(snapshot_df)
 
-    # 4. 持仓收益率
-    print("\n[4/4] 计算持仓收益率...")
-    detail_df, summary_df, platform_df = analyze_token_returns(
+    # 5. 每个钱包每个币种收益率
+    print("\n[5/5] 计算钱包币种收益率...")
+    detail_df, wallet_summary_df, summary_df, platform_df = analyze_token_returns(
         addresses, wallets_df
     )
     all_results['token_returns_detail'] = detail_df
+    all_results['wallet_returns_summary'] = wallet_summary_df
     all_results['token_returns_summary'] = summary_df
     all_results['platform_returns'] = platform_df
 
-    # 5. 保存 Excel
+    # 保存 Excel
     save_to_excel(all_results)
 
     print("\n分析完成!")
