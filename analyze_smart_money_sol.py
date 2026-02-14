@@ -38,13 +38,14 @@ class SmartMoneySOLAnalyzer:
     只查询 is_high_frequency=0 的钱包，筛选 pnl_30d > 0 的盈利钱包。
     所有盈利数值以 SOL 等值为单位（SOL + 稳定币折算为SOL）。
 
-    输出 6 个 Sheet:
+    输出 7 个 Sheet:
       1. 30D盈利钱包概览
       2. Top10高收益币种
       3. 钱包Top10覆盖
       4. Top10币种钱包盈利明细
-      5. 买卖时间相似性
-      6. 行为相似性
+      5. Top10盈利钱包完整持仓（买了哪些币、时间、盈亏）
+      6. 买卖时间相似性
+      7. 行为相似性
     """
 
     def __init__(self, sol_price_usd=DEFAULT_SOL_PRICE_USD, days=30):
@@ -71,7 +72,7 @@ class SmartMoneySOLAnalyzer:
 
     def _load_wallets(self):
         """加载非高频钱包（is_high_frequency=0）"""
-        print("\n[1/6] 加载非高频钱包...")
+        print("\n[1/7] 加载非高频钱包...")
 
         session = get_session()
         try:
@@ -244,7 +245,7 @@ class SmartMoneySOLAnalyzer:
         保留 SOL 计价和稳定币计价的交易，统一用 SOL 等值计算。
         跳过代币互换（Token A ↔ Token B，SOL 仅 gas 且无稳定币参与）。
         """
-        print("\n[2/6] 加载交易数据...")
+        print("\n[2/7] 加载交易数据...")
 
         if self.profitable_wallets is None or self.profitable_wallets.empty:
             self.trades_df = pd.DataFrame()
@@ -342,7 +343,7 @@ class SmartMoneySOLAnalyzer:
           - 卖出比例 10%~90% → 部分卖出
           - 卖出比例 > 90% → 已清仓
         """
-        print("\n[3/6] 计算每个钱包-币种的纯SOL盈亏...")
+        print("\n[3/7] 计算每个钱包-币种的SOL等值盈亏...")
 
         if self.trades_df is None or self.trades_df.empty:
             self.token_profit_df = pd.DataFrame()
@@ -460,7 +461,7 @@ class SmartMoneySOLAnalyzer:
         Sheet 1: 30D盈利钱包概览（含持仓状态统计）
         Sheet 2: Top10高收益币种（综合加权排名）
         """
-        print("\n[4/6] 生成盈利钱包概览 & Top10高收益币种...")
+        print("\n[4/7] 生成盈利钱包概览 & Top10高收益币种...")
 
         if self.token_profit_df is None or self.token_profit_df.empty:
             return
@@ -820,16 +821,106 @@ class SmartMoneySOLAnalyzer:
             self.results['Top10币种钱包盈利明细'] = df
             print(f"  Top10币种-钱包盈利明细: {len(df)} 条")
 
+    def _analyze_top10_wallet_all_tokens(self):
+        """
+        Sheet 5: Top10盈利钱包完整持仓
+
+        取 30D PnL 最高的前10个钱包，展示它们的完整交易记录（所有币种），
+        包含买入时间、持仓状态、盈亏情况。
+        按钱包 PnL 降序分组，组内按首次买入时间排序。
+        """
+        print("\n[5/7] 生成Top10盈利钱包完整持仓明细...")
+
+        if self.profitable_wallets is None or self.profitable_wallets.empty:
+            return
+        if self.token_profit_df is None or self.token_profit_df.empty:
+            return
+
+        # 取 30D PnL 最高的前10个钱包（profitable_wallets 已按 pnl_30d 降序）
+        top10_wallets = self.profitable_wallets.head(10)
+        top10_wallet_addrs = set(top10_wallets['address'].tolist())
+
+        if not top10_wallet_addrs:
+            print("  没有盈利钱包")
+            return
+
+        print(f"  Top10盈利钱包:")
+        for i, (_, w) in enumerate(top10_wallets.iterrows(), 1):
+            name = self.name_map.get(w['address'], '')
+            name_str = f" ({name})" if name else ''
+            print(f"    #{i} {w['address'][:8]}...{name_str}"
+                  f" PnL={w['pnl_30d_sol']:.4f} SOL")
+
+        # 获取这10个钱包的所有币种交易记录
+        all_trades = self.token_profit_df[
+            self.token_profit_df['钱包地址'].isin(top10_wallet_addrs)
+        ].copy()
+
+        if all_trades.empty:
+            print("  Top10钱包无交易记录")
+            return
+
+        # 添加钱包 PnL 排名
+        wallet_rank = dict(zip(
+            top10_wallets['address'],
+            range(1, len(top10_wallets) + 1)
+        ))
+        all_trades['钱包排名'] = all_trades['钱包地址'].map(wallet_rank)
+
+        # 合并钱包 30D 指标
+        w_info = top10_wallets[[
+            'address', 'pnl_30d_sol', 'win_rate_30d', 'tx_count_30d'
+        ]].copy()
+        all_trades = all_trades.merge(
+            w_info, left_on='钱包地址', right_on='address', how='left'
+        )
+        all_trades.drop(columns=['address'], inplace=True, errors='ignore')
+        all_trades.rename(columns={
+            'pnl_30d_sol': '钱包30D_PnL(SOL)',
+            'win_rate_30d': '钱包30D_胜率(%)',
+            'tx_count_30d': '钱包30D_交易次数',
+        }, inplace=True)
+
+        # 按钱包排名升序，组内按首次买入时间排序
+        all_trades = all_trades.sort_values(
+            ['钱包排名', '首次买入时间'],
+            ascending=[True, True]
+        ).reset_index(drop=True)
+
+        # 整理列顺序
+        col_order = [
+            '钱包排名', '钱包地址', '钱包名称',
+            '钱包30D_PnL(SOL)', '钱包30D_胜率(%)', '钱包30D_交易次数',
+            '代币符号', '代币地址',
+            '首次买入时间', '最后卖出时间',
+            '持仓状态', '卖出比例(%)',
+            '买入成本(SOL)', '卖出收入(SOL)',
+            '已实现盈亏(SOL)', '已实现收益率(%)',
+            '未实现成本(SOL)',
+            '买入次数', '卖出次数',
+        ]
+        all_trades = all_trades[
+            [c for c in col_order if c in all_trades.columns]
+        ]
+
+        self.results['Top10钱包完整持仓'] = all_trades
+
+        # 统计信息
+        n_wallets = all_trades['钱包地址'].nunique()
+        n_tokens = all_trades['代币地址'].nunique()
+        print(f"  {n_wallets} 个Top10钱包共交易 {n_tokens} 个币种，"
+              f"{len(all_trades)} 条记录")
+
     def _analyze_timing_similarity(self):
         """
-        Sheet 5: 哪些30D盈利钱包总是差不多一起买卖 Top10 币
+        Sheet 6: 哪些30D盈利钱包总是差不多一起买卖 Top10 币
 
         对所有交易了 Top10 币种的钱包两两比较:
           - 比较它们在共同买入的 Top10 币种上的首次买入时间差
           - 比较最后卖出时间差
           - 计算时间相似度分数（时差越小越相似）
         """
-        print("\n[5/6] 分析买卖时间相似性...")
+        print("\n[6/7] 分析买卖时间相似性...")
 
         if self.top10_tokens is None or self.top10_tokens.empty:
             return
@@ -952,7 +1043,7 @@ class SmartMoneySOLAnalyzer:
           - 胜率相似度: 盈利币种占比接近程度
           - 综合相似度 = 40%币种 + 30%仓位 + 30%胜率
         """
-        print("\n[6/6] 分析行为相似性...")
+        print("\n[7/7] 分析行为相似性...")
 
         if self.token_profit_df is None or self.token_profit_df.empty:
             return
@@ -1105,6 +1196,7 @@ class SmartMoneySOLAnalyzer:
             'Top10高收益币种',
             '钱包Top10覆盖',
             'Top10币种钱包盈利明细',
+            'Top10钱包完整持仓',
             '买卖时间相似性',
             '行为相似性',
         ]
@@ -1169,13 +1261,16 @@ class SmartMoneySOLAnalyzer:
         # 7. Top10币种-钱包盈利明细
         self._analyze_top10_wallet_profit()
 
-        # 8. 买卖时间相似性
+        # 8. Top10钱包完整持仓明细
+        self._analyze_top10_wallet_all_tokens()
+
+        # 9. 买卖时间相似性
         self._analyze_timing_similarity()
 
-        # 9. 行为相似性
+        # 10. 行为相似性
         self._analyze_behavior_similarity()
 
-        # 10. 保存报表
+        # 11. 保存报表
         self._save_report()
 
         print("\n分析完成!")
